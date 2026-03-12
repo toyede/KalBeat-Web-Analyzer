@@ -1,74 +1,178 @@
 # KalBeat Web Analyzer
 
-리듬게임 채보 제작을 위한 웹 분석 도구의 초기 스캐폴드입니다. 현재 구성은 `Next.js` 프론트엔드와 `FastAPI` 백엔드를 하나의 저장소에서 함께 관리하는 방식입니다.
+리듬게임용 BGM에서 `BPM`, `offset`, `song length`를 추정하고, 그 위에 이벤트 후보를 `정박 / 8분 / 16분` 기준으로 마킹해서 검토할 수 있게 만든 웹 기반 분석 도구다.  
+현재 구현은 "자동 채보 완성"보다 "후보 이벤트를 많이 뽑고, 사람이 선택해서 정리하는 작업 화면"에 초점을 맞춘 상태다.
 
-## 현재 결정사항
+## 현재 구현 범위
 
-- 인증: 없음
-- 업로드 포맷: `wav`, `mp3`
-- 앱 레벨 업로드 용량 제한: 없음
-- 프론트엔드: `Next.js + TypeScript`
-- 백엔드: `FastAPI + Python 3.11`
-- 1차 범위: 업로드, BPM/offset/downbeat 초안, 섹션/비트 시각화용 JSON 응답
+- `wav`, `mp3` 업로드
+- `BPM`, `offset`, `song length` 추정
+- 후보 이벤트 추출
+- 후보 이벤트를 `마디 시작 정박`, `정박`, `8분 오프비트`, `16분 세분`으로 분류
+- 파형 기반 타임라인 시각화
+- 타임라인 `줌`, `이동`, `선택 위치로 이동`
+- 효과음 파일을 겹쳐서 이벤트 미리듣기
+- 그룹 선택 기반 `선택 그룹 재생`
+- 이벤트별 `검토 전 / 채용 / 제외` 상태 정리
 
-참고: 앱 코드에서 용량 제한은 두지 않았지만, 실제 배포 환경에서는 프록시나 호스팅 서비스에서 별도 제한이 걸릴 수 있습니다.
+## 사용한 기술
 
-## 폴더 구조
+### Frontend
 
-```text
-frontend/  Next.js 앱
-backend/   FastAPI API
-```
+- `Next.js 15`
+- `React 19`
+- `TypeScript`
+- 브라우저 `Web Audio API`
 
-## 빠른 실행
+### Backend
 
-### 1. 백엔드
+- `FastAPI`
+- `librosa`
+- `numpy`
+- `scipy`
+- `soundfile`
+- `python-multipart`
 
-```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.example .env
-uvicorn app.main:app --reload
-```
+## 분석 파이프라인
 
-가상환경을 매번 직접 활성화하기 싫으면 아래처럼 실행해도 됩니다.
+### 1. 오디오 디코딩과 리샘플링
 
-```powershell
-.\backend\run-dev.ps1
-```
+업로드된 오디오는 `soundfile`로 읽고, 내부 분석 해상도를 맞추기 위해 `scipy.signal.resample_poly`로 `22.05kHz` 기준으로 리샘플링한다.  
+이 단계는 입력 포맷이 달라도 뒤쪽 분석 로직이 같은 기준에서 동작하게 만드는 역할을 한다.
 
-### 2. 프론트엔드
+### 2. 퍼커시브 성분 분리
 
-```powershell
-cd frontend
-npm install
-Copy-Item .env.example .env.local
-npm run dev
-```
+`librosa.effects.hpss`를 사용해서 전체 신호에서 퍼커시브 성분을 분리한다.  
+리듬게임용 이벤트 후보는 멜로디보다 타격성 신호가 더 중요하므로, onset 검출 전에 퍼커시브 신호를 강조하는 쪽이 더 안정적이다.
 
-프론트엔드는 기본적으로 `http://127.0.0.1:8000`의 백엔드를 바라봅니다.
+### 3. Onset Envelope 생성
 
-## 현재 구현 상태
+`librosa.onset.onset_strength`로 onset envelope를 만든다.  
+이 값은 시간축에서 "지금 타격성 변화가 얼마나 강한가"를 수치화한 것으로, 이후 BPM 추정과 이벤트 후보 선택의 공통 입력으로 사용한다.
 
-- 업로드 화면과 JSON 프리뷰 UI
-- `wav`, `mp3` 파일 형식 검증
-- FastAPI 업로드 엔드포인트
-- `librosa` 기반 BPM, beat, downbeat, section, chart hint 초안 생성
-- Unity 연동용 분석 JSON 응답
+### 4. BPM 추정
 
-## 가상환경과 배포
+`librosa.beat.beat_track`으로 beat frame을 먼저 구하고, beat 간격의 median으로 BPM을 다시 계산한다.  
+이후 값이 정수 BPM에 매우 가까우면 스냅해서 `110.0` 같은 차트용 BPM으로 고정한다.
 
-- `backend/.venv`는 로컬 개발용 Python 격리 환경입니다. 이 폴더 안에서만 실행해야 한다는 뜻이 아니라, 이 환경의 Python 인터프리터로 실행해야 한다는 뜻입니다.
-- 로컬에서는 `.venv\Scripts\Activate.ps1`로 활성화하거나, `backend/run-dev.ps1`처럼 `.venv\Scripts\python.exe`를 직접 호출하면 됩니다.
-- 배포할 때는 로컬 `.venv`를 그대로 올리지 않습니다. 서버나 호스팅 환경에서 새 Python 환경을 만들고 `pip install -r requirements.txt`를 다시 실행합니다.
-- Docker는 필수는 아니지만, 오디오 라이브러리와 시스템 의존성을 고정하기 쉬워서 재현성 측면에서는 권장할 만합니다.
+핵심 아이디어:
 
-## 다음 작업
+- beat tracker의 결과를 그대로 쓰지 않고, beat 간격 기반 median으로 다시 계산
+- 정수 BPM 근처는 스냅해서 사람이 쓰기 좋은 값으로 보정
 
-- 멀티 BPM 정확도 개선과 템포맵 보정
-- stem separation 및 악기 단위 onset 분석
-- 분석 작업 큐와 상태 추적
-- 템포맵/다운비트/차트 힌트 보정 UI
-- Unity import preset 맞춤 내보내기
+### 5. Offset 추정
+
+첫 beat와 첫 onset을 같이 비교해서 offset을 정한다.
+
+- beat가 충분히 잡히면 첫 beat를 기본값으로 사용
+- 첫 onset이 그보다 조금 앞에 있고 리듬적으로 자연스러우면 onset을 offset으로 채택
+- beat가 부족한 파일은 onset 기반으로 fallback
+
+즉, 현재 offset은 "첫 번째 의미 있는 리듬 진입점"을 고르는 휴리스틱에 가깝다.
+
+### 6. 후보 이벤트 추출
+
+후보 이벤트는 beat 하나만 보지 않고, 한 beat를 다시 `4분할`한 고정 그리드에서 찾는다.
+
+그리드 기준:
+
+- `slot 0`: 정박
+- `slot 2`: 8분 오프비트
+- `slot 1, 3`: 16분 세분
+
+각 그리드 위치마다 그 주변 구간의 onset envelope local peak를 찾고, 아래 두 요소를 합쳐 점수를 만든다.
+
+- `strength`: local peak의 상대 강도
+- `closeness`: 그 peak가 그리드 중심에 얼마나 가까운지
+
+최종 confidence는 이 둘의 가중합으로 계산한다.  
+그 후 그리드 역할별로 서로 다른 임계값을 적용해서 이벤트를 남긴다.
+
+역할별 분류:
+
+- `downbeat`: 4/4 기준 각 마디의 첫 박
+- `beat`: 마디 안의 일반 정박
+- `offbeat`: 8분 오프비트
+- `subdivision`: 16분 세분
+
+세기 분류:
+
+- `strong`
+- `steady`
+- `light`
+
+이 구조 덕분에 "이 이벤트가 왜 여기서 잡혔는지"를 단순 시간 목록이 아니라, 분할 원리와 함께 해석할 수 있다.
+
+## 프론트 상호작용 구현
+
+### 파형 시각화
+
+업로드한 원본 파일은 브라우저에서 `AudioContext.decodeAudioData`로 다시 디코딩하고, 일정 구간 단위 peak를 계산해서 파형 막대로 그린다.  
+즉, 파형은 백엔드가 내려주는 데이터가 아니라 프론트가 직접 만든 시각화다.
+
+### 타임라인 줌/이동
+
+타임라인은 컨텐츠 폭을 늘리는 방식으로 확대하고, 수평 스크롤과 이동 슬라이더를 함께 사용한다.  
+그래서 전체 길이를 보다가도 특정 구간으로 좁혀서 이벤트 밀도를 확인할 수 있다.
+
+### 효과음 미리듣기
+
+미리듣기는 `Web Audio API`로 원본 음원과 효과음을 같은 타임라인 위에 다시 스케줄링하는 방식으로 구현했다.
+
+- 원본 음악 버퍼 재생
+- 후보 이벤트 시간에 맞춰 효과음 버퍼 또는 합성 클릭 재생
+- `음원 볼륨`, `효과음 볼륨` 개별 조절
+- `전체 재생`, `선택 그룹 재생`, `선택 이벤트 재생`
+
+즉, 서버에서 새 오디오 파일을 만들어 내려주는 방식이 아니라 브라우저에서 실시간으로 겹쳐 듣는 구조다.
+
+### 그룹 선택
+
+후보 이벤트 패널의 상단에는 그룹 요약 카드가 있고, 여기서 재생 대상 그룹을 선택한다.
+
+- 마디 시작 정박
+- 정박
+- 8분 오프비트
+- 16분 세분
+
+이 선택 상태는 타임라인의 `선택 그룹 재생` 버튼에 그대로 연결된다.
+
+## 현재 UI에서 가능한 작업
+
+- 음원 업로드 후 BPM / offset / 길이 확인
+- 그룹별 후보 이벤트 개수 확인
+- 특정 그룹만 선택해서 재생
+- 특정 이벤트를 고른 뒤 그 이벤트만 미리듣기
+- 이벤트를 `검토 전 / 채용 / 제외`로 분류
+- 확대/이동하면서 파형과 마커 위치 비교
+
+## 주요 파일
+
+- `backend/app/services/analysis.py`
+  - 오디오 분석 파이프라인
+- `backend/app/schemas.py`
+  - API 응답 스키마
+- `frontend/components/upload-workbench.tsx`
+  - 업로드와 전체 상태 관리
+- `frontend/components/analysis-timeline.tsx`
+  - 타임라인, 파형, 미리듣기
+- `frontend/components/candidate-events-panel.tsx`
+  - 그룹 선택과 이벤트 검토 UI
+- `frontend/lib/candidate-event-meta.ts`
+  - 그룹 메타데이터
+
+## 현재 한계
+
+- 후보 이벤트 검토 상태는 아직 프론트 로컬 상태라 새로고침하면 사라진다
+- 현재 이벤트 분류는 `4/4` 전제에 맞춘 beat subdivision 휴리스틱이다
+- stem separation이나 악기별 분리는 아직 하지 않는다
+- 최종 채보를 자동 생성하는 단계까지는 아직 구현하지 않았다
+
+## 요약
+
+현재 구현은 다음 두 가지를 중심으로 설계되어 있다.
+
+- 오디오에서 리듬적으로 의미 있는 지점을 많이 뽑는다
+- 그 지점을 사람이 빠르게 듣고, 보고, 골라낼 수 있게 만든다
+
+즉 이 프로젝트는 "완성 채보 생성기"보다 "리듬게임용 이벤트 후보 분석기"에 더 가깝다.
