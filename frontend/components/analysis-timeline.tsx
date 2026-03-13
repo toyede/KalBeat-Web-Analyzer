@@ -2,10 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MutableRefObject } from "react";
 
-import { timingRoleMeta } from "@/lib/candidate-event-meta";
+import { timingRoleMeta, timingRoleOrder } from "@/lib/candidate-event-meta";
 import type { AnalysisResponse, CandidateReviewState, CandidateTimingRole } from "@/lib/types";
 
 type TimingRoleSelection = Record<CandidateTimingRole, boolean>;
+
+const MIN_TIMELINE_ZOOM = 1;
+const MAX_TIMELINE_ZOOM = 10;
+const TIMELINE_ZOOM_STEP = 0.5;
 
 type AnalysisTimelineProps = {
   activeTimingRoles: TimingRoleSelection;
@@ -16,12 +20,23 @@ type AnalysisTimelineProps = {
   onSelectEvent: (eventId: string) => void;
 };
 
-type WindowWithWebkitAudio = Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext };
+type WindowWithWebkitAudio = Window &
+  typeof globalThis & {
+    webkitAudioContext?: typeof AudioContext;
+  };
 
 function formatSeconds(value: number) {
   const minutes = Math.floor(value / 60);
   const seconds = value - minutes * 60;
   return `${minutes}:${seconds.toFixed(2).padStart(5, "0")}`;
+}
+
+function formatSlotLabel(slotInBeat: number, gridDivision: number) {
+  if (gridDivision === 0) {
+    return "free onset";
+  }
+
+  return `slot ${slotInBeat}/${gridDivision}`;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -110,6 +125,7 @@ export function AnalysisTimeline({
   const effectBufferRef = useRef<{ key: string; buffer: AudioBuffer } | null>(null);
   const activeSourcesRef = useRef<AudioScheduledSourceNode[]>([]);
   const playbackTimerRef = useRef<number | null>(null);
+
   const selectedEvent =
     analysis.candidateEvents.find((event) => event.id === selectedEventId) ?? analysis.candidateEvents[0] ?? null;
   const selectedMeta = selectedEvent ? timingRoleMeta[selectedEvent.timingRole] : null;
@@ -117,6 +133,11 @@ export function AnalysisTimeline({
     () => analysis.candidateEvents.filter((event) => activeTimingRoles[event.timingRole]),
     [activeTimingRoles, analysis.candidateEvents],
   );
+  const timelineRoles = useMemo(
+    () => timingRoleOrder.filter((role) => analysis.candidateEvents.some((event) => event.timingRole === role)),
+    [analysis.candidateEvents],
+  );
+
   const visibleFraction = 1 / zoomLevel;
   const maxStartFraction = Math.max(0, 1 - visibleFraction);
   const startFraction = maxStartFraction > 0 ? (panPercent / 100) * maxStartFraction : 0;
@@ -144,7 +165,7 @@ export function AnalysisTimeline({
         }
 
         setWaveformBars(bars);
-        setWaveformStatus("줌과 이동으로 원하는 구간을 확대해서 볼 수 있습니다.");
+        setWaveformStatus("그룹별 레인을 확대해서 이벤트 점 위치를 비교할 수 있습니다.");
       })
       .catch(() => {
         if (cancelled) {
@@ -173,7 +194,7 @@ export function AnalysisTimeline({
 
   useEffect(() => {
     syncViewportToPan();
-  }, [syncViewportToPan, zoomLevel, waveformBars.length, analysis.candidateEvents.length]);
+  }, [syncViewportToPan, zoomLevel, waveformBars.length, analysis.candidateEvents.length, timelineRoles.length]);
 
   const stopPlayback = useCallback((statusMessage?: string) => {
     for (const source of activeSourcesRef.current) {
@@ -250,7 +271,9 @@ export function AnalysisTimeline({
 
   function handleZoomChange(event: ChangeEvent<HTMLInputElement>) {
     const nextZoom = Number.parseFloat(event.target.value);
-    setZoomLevel(clamp(Number.isFinite(nextZoom) ? nextZoom : 1, 1, 10));
+    setZoomLevel(
+      clamp(Number.isFinite(nextZoom) ? nextZoom : MIN_TIMELINE_ZOOM, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM),
+    );
   }
 
   function handlePanChange(event: ChangeEvent<HTMLInputElement>) {
@@ -293,7 +316,7 @@ export function AnalysisTimeline({
     }
 
     if (mode === "group" && selectedGroupEvents.length === 0) {
-      setPreviewStatus("재생할 그룹이 선택되지 않았습니다. 아래 그룹 체크박스를 먼저 선택해 주세요.");
+      setPreviewStatus("재생할 그룹이 선택되지 않았습니다. 위 그룹 카드에서 먼저 선택해 주세요.");
       return;
     }
 
@@ -383,12 +406,12 @@ export function AnalysisTimeline({
       <div className="subpanel-header">
         <div>
           <p className="eyebrow">Timeline</p>
-          <h3>타임라인과 이벤트 마킹</h3>
+          <h3>타임라인과 이벤트 레인</h3>
         </div>
         <div className="timeline-summary">
           <span>{analysis.candidateEvents.length}개 후보 이벤트</span>
+          <span>{timelineRoles.length}개 레인</span>
           <span>선택 그룹 {selectedGroupEvents.length}개</span>
-          <span>{formatSeconds(analysis.songLengthSec)} 길이</span>
         </div>
       </div>
 
@@ -400,15 +423,30 @@ export function AnalysisTimeline({
           <div className="toolbar-row">
             <button
               className="mini-button"
-              onClick={() => setZoomLevel((current) => clamp(current - 0.5, 1, 10))}
+              onClick={() =>
+                setZoomLevel((current) =>
+                  clamp(current - TIMELINE_ZOOM_STEP, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM),
+                )
+              }
               type="button"
             >
               -
             </button>
-            <input max="10" min="1" onChange={handleZoomChange} step="0.5" type="range" value={zoomLevel} />
+            <input
+              max={MAX_TIMELINE_ZOOM}
+              min={MIN_TIMELINE_ZOOM}
+              onChange={handleZoomChange}
+              step={TIMELINE_ZOOM_STEP}
+              type="range"
+              value={zoomLevel}
+            />
             <button
               className="mini-button"
-              onClick={() => setZoomLevel((current) => clamp(current + 0.5, 1, 10))}
+              onClick={() =>
+                setZoomLevel((current) =>
+                  clamp(current + TIMELINE_ZOOM_STEP, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM),
+                )
+              }
               type="button"
             >
               +
@@ -442,46 +480,60 @@ export function AnalysisTimeline({
       <div className="timeline-stage">
         <div className="timeline-viewport" onScroll={handleViewportScroll} ref={viewportRef}>
           <div className="timeline-content" style={{ width: `${Math.max(100, zoomLevel * 100)}%` }}>
-            <div className="timeline-waveform" role="img" aria-label="Waveform and candidate event markers">
-              <div className="timeline-bars" aria-hidden="true">
-                {waveformBars.map((value, index) => (
-                  <span
-                    key={`bar-${index}`}
-                    className="timeline-bar"
-                    style={{ height: `${Math.max(8, Math.round(value * 100))}%` }}
-                  />
-                ))}
-              </div>
-
-              {analysis.songLengthSec > 0 ? (
-                <div
-                  aria-hidden="true"
-                  className="timeline-offset-marker"
-                  style={{ left: `${Math.min((analysis.offsetSec / analysis.songLengthSec) * 100, 100)}%` }}
-                />
-              ) : null}
-
-              <div className="timeline-marker-layer">
-                {analysis.candidateEvents.map((event) => {
-                  const reviewState = reviewStates[event.id] ?? "unreviewed";
-                  const position = analysis.songLengthSec > 0 ? (event.timeSec / analysis.songLengthSec) * 100 : 0;
-                  const meta = timingRoleMeta[event.timingRole];
-                  const isGroupActive = activeTimingRoles[event.timingRole];
-
-                  return (
-                    <button
-                      key={event.id}
-                      type="button"
-                      className={`timeline-marker ${event.kind} ${reviewState} ${
-                        event.id === selectedEventId ? "selected" : ""
-                      } ${isGroupActive ? "" : "group-disabled"}`}
-                      onClick={() => onSelectEvent(event.id)}
-                      style={{ left: `${Math.min(position, 100)}%` }}
-                      title={`${meta.label} · Beat ${event.beatIndex} · ${event.timeSec.toFixed(3)}s`}
+            <div className="timeline-track-row waveform-row">
+              <div className="timeline-track-label">Wave</div>
+              <div className="timeline-waveform-track">
+                <div className="timeline-bars" aria-hidden="true">
+                  {waveformBars.map((value, index) => (
+                    <span
+                      key={`bar-${index}`}
+                      className="timeline-bar"
+                      style={{ height: `${Math.max(8, Math.round(value * 100))}%` }}
                     />
-                  );
-                })}
+                  ))}
+                </div>
+                {analysis.songLengthSec > 0 ? (
+                  <div
+                    aria-hidden="true"
+                    className="timeline-offset-marker"
+                    style={{ left: `${Math.min((analysis.offsetSec / analysis.songLengthSec) * 100, 100)}%` }}
+                  />
+                ) : null}
               </div>
+            </div>
+
+            <div className="timeline-lanes">
+              {timelineRoles.map((role) => {
+                const meta = timingRoleMeta[role];
+                const groupEvents = analysis.candidateEvents.filter((event) => event.timingRole === role);
+                const isRoleActive = activeTimingRoles[role];
+
+                return (
+                  <div className={`timeline-track-row lane-row ${isRoleActive ? "" : "lane-disabled"}`} key={role}>
+                    <div className="timeline-track-label">{meta.shortLabel}</div>
+                    <div className="timeline-lane-track">
+                      <div className="timeline-lane-rule" aria-hidden="true" />
+                      {groupEvents.map((event) => {
+                        const reviewState = reviewStates[event.id] ?? "unreviewed";
+                        const position = analysis.songLengthSec > 0 ? (event.timeSec / analysis.songLengthSec) * 100 : 0;
+
+                        return (
+                          <button
+                            key={event.id}
+                            type="button"
+                            className={`timeline-dot ${event.kind} ${reviewState} ${
+                              event.id === selectedEventId ? "selected" : ""
+                            } ${isRoleActive ? "" : "group-disabled"}`}
+                            onClick={() => onSelectEvent(event.id)}
+                            style={{ left: `${Math.min(position, 100)}%` }}
+                            title={`${meta.label} · Beat ${event.beatIndex} · ${event.timeSec.toFixed(3)}s`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -566,7 +618,7 @@ export function AnalysisTimeline({
             </div>
             <div className="selected-event-meta">
               <span>Bar {selectedEvent.barIndex}</span>
-              <span>slot {selectedEvent.slotInBeat}/4</span>
+              <span>{formatSlotLabel(selectedEvent.slotInBeat, selectedEvent.gridDivision)}</span>
               <span>confidence {Math.round(selectedEvent.confidence * 100)}%</span>
               <span>strength {Math.round(selectedEvent.strength * 100)}%</span>
             </div>

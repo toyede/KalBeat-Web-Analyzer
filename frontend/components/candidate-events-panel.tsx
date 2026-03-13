@@ -1,9 +1,13 @@
 "use client";
 
 import { timingRoleMeta, timingRoleOrder } from "@/lib/candidate-event-meta";
-import type { AnalysisResponse, CandidateReviewState, CandidateTimingRole } from "@/lib/types";
-
-type TimingRoleSelection = Record<CandidateTimingRole, boolean>;
+import type {
+  AnalysisResponse,
+  CandidateEvent,
+  CandidateReviewState,
+  CandidateTimingRole,
+  TimingRoleSelection,
+} from "@/lib/types";
 
 type CandidateEventsPanelProps = {
   activeTimingRoles: TimingRoleSelection;
@@ -21,6 +25,14 @@ const reviewLabels: Record<CandidateReviewState, string> = {
   keep: "채용",
   skip: "제외",
 };
+
+function formatSlotLabel(event: CandidateEvent) {
+  if (event.gridDivision === 0) {
+    return "free onset";
+  }
+
+  return `slot ${event.slotInBeat}/${event.gridDivision}`;
+}
 
 export function CandidateEventsPanel({
   activeTimingRoles,
@@ -64,8 +76,7 @@ export function CandidateEventsPanel({
       </div>
 
       <p className="helper-text">
-        위쪽 그룹 목록에서는 재생에 포함할 그룹만 고를 수 있고, 아래 상세 섹션에서는 기존처럼 각 이벤트를
-        검토할 수 있습니다.
+        위 그룹 카드에서 재생 대상 그룹만 빠르게 고르고, 아래 상세 목록에서 각 이벤트의 시점과 분류 상태를 검토할 수 있습니다.
       </p>
 
       <div className="group-control-bar">
@@ -104,7 +115,7 @@ export function CandidateEventsPanel({
       </div>
 
       {analysis.candidateEvents.length === 0 ? (
-        <p className="helper-text">현재 분석 결과에는 마킹할 후보 이벤트가 없습니다.</p>
+        <p className="helper-text">현재 분석 결과에는 표시할 후보 이벤트가 없습니다.</p>
       ) : (
         <div className="event-groups">
           {timingRoleOrder.map((role) => {
@@ -146,7 +157,7 @@ export function CandidateEventsPanel({
                             <span>
                               Bar {event.barIndex}.{event.beatInBar}
                             </span>
-                            <span>slot {event.slotInBeat}/4</span>
+                            <span>{formatSlotLabel(event)}</span>
                             <span>confidence {Math.round(event.confidence * 100)}%</span>
                             <span>strength {Math.round(event.strength * 100)}%</span>
                           </div>
