@@ -60,6 +60,7 @@ celerybeat-schedule
 # Logs / temp
 *.log
 *.pid
+.kalbeat-runtime/
 tmp/
 temp/
 logs/

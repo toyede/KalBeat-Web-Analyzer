@@ -1,5 +1,7 @@
 "use client";
 
+import { useMemo } from "react";
+
 import { timingRoleMeta, timingRoleOrder } from "@/lib/candidate-event-meta";
 import type {
   AnalysisResponse,
@@ -44,6 +46,13 @@ export function CandidateEventsPanel({
   onSelectEvent,
   onToggleTimingRole,
 }: CandidateEventsPanelProps) {
+  const eventsByRole = useMemo(
+    () =>
+      Object.fromEntries(
+        timingRoleOrder.map((role) => [role, analysis.candidateEvents.filter((event) => event.timingRole === role)]),
+      ) as Record<CandidateTimingRole, CandidateEvent[]>,
+    [analysis.candidateEvents],
+  );
   let keepCount = 0;
   let skipCount = 0;
 
@@ -94,7 +103,7 @@ export function CandidateEventsPanel({
       <div className="group-summary-grid">
         {timingRoleOrder.map((role) => {
           const meta = timingRoleMeta[role];
-          const count = analysis.candidateEvents.filter((event) => event.timingRole === role).length;
+          const count = eventsByRole[role].length;
 
           if (count === 0) {
             return null;
@@ -119,7 +128,7 @@ export function CandidateEventsPanel({
       ) : (
         <div className="event-groups">
           {timingRoleOrder.map((role) => {
-            const groupEvents = analysis.candidateEvents.filter((event) => event.timingRole === role);
+            const groupEvents = eventsByRole[role];
 
             if (groupEvents.length === 0) {
               return null;

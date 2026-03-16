@@ -40,6 +40,10 @@ type Phase = "idle" | "uploading" | "success" | "error";
 const defaultMessage =
   "샘플 결과가 먼저 보입니다. 실제 오디오 파일을 올리면 BPM, offset, 곡 길이와 함께 두 가지 후보 추출 방식의 차이를 바로 비교할 수 있습니다.";
 
+function getDefaultReviewState(event: CandidateEvent, activeTimingRoles: TimingRoleSelection): CandidateReviewState {
+  return activeTimingRoles[event.timingRole] ? "keep" : "unreviewed";
+}
+
 function getPhaseLabel(phase: Phase) {
   if (phase === "uploading") {
     return "분석 중";
@@ -75,24 +79,28 @@ function collectAllCandidateEvents(analysis: AnalysisResponse) {
   return events;
 }
 
-function createInitialReviewState(analysis: AnalysisResponse) {
+function createInitialReviewState(
+  analysis: AnalysisResponse,
+  activeTimingRoles: TimingRoleSelection = createTimingRoleSelection(true),
+) {
   return Object.fromEntries(
-    collectAllCandidateEvents(analysis).map((event) => [event.id, "unreviewed" as CandidateReviewState]),
+    collectAllCandidateEvents(analysis).map((event) => [event.id, getDefaultReviewState(event, activeTimingRoles)]),
   );
 }
 
 function mergeReviewStates(
   analysis: AnalysisResponse,
+  activeTimingRoles: TimingRoleSelection,
   current: Record<string, CandidateReviewState> | null | undefined,
 ) {
-  const next = createInitialReviewState(analysis);
+  const next = createInitialReviewState(analysis, activeTimingRoles);
 
   if (!current) {
     return next;
   }
 
   for (const event of collectAllCandidateEvents(analysis)) {
-    next[event.id] = current[event.id] ?? "unreviewed";
+    next[event.id] = current[event.id] ?? getDefaultReviewState(event, activeTimingRoles);
   }
 
   return next;
@@ -142,7 +150,7 @@ export function UploadWorkbench() {
   );
   const [selectedEventId, setSelectedEventId] = useState<string | null>(sampleAnalysis.candidateEvents[0]?.id ?? null);
   const [reviewStates, setReviewStates] = useState<Record<string, CandidateReviewState>>(
-    createInitialReviewState(sampleAnalysis),
+    createInitialReviewState(sampleAnalysis, createTimingRoleSelection(true)),
   );
   const [activeTimingRoles, setActiveTimingRoles] = useState<TimingRoleSelection>(createTimingRoleSelection(true));
   const [savedProjects, setSavedProjects] = useState<SavedProjectSummary[]>([]);
@@ -199,7 +207,7 @@ export function UploadWorkbench() {
 
   useEffect(() => {
     setReviewStates((current) => {
-      const next = mergeReviewStates(deferredAnalysis, current);
+      const next = mergeReviewStates(deferredAnalysis, activeTimingRoles, current);
       const currentKeys = Object.keys(current);
       const nextKeys = Object.keys(next);
 
@@ -209,7 +217,7 @@ export function UploadWorkbench() {
 
       return next;
     });
-  }, [deferredAnalysis]);
+  }, [activeTimingRoles, deferredAnalysis]);
 
   useEffect(() => {
     const nextVariant = getCandidateVariant(deferredAnalysis, activeCandidateStrategy);
@@ -253,8 +261,9 @@ export function UploadWorkbench() {
         setAnalysis(result);
         setActiveCandidateStrategy(defaultVariant.strategy);
         setSelectedEventId(defaultVariant.candidateEvents[0]?.id ?? null);
-        setReviewStates(createInitialReviewState(result));
-        setActiveTimingRoles(createTimingRoleSelection(true));
+        const nextTimingRoles = createTimingRoleSelection(true);
+        setActiveTimingRoles(nextTimingRoles);
+        setReviewStates(createInitialReviewState(result, nextTimingRoles));
         setPhase("success");
         setMessage(
           `${result.audioFileName} 분석이 끝났습니다. 전곡 기준 ${globalCount}개, 4마디 기준 ${sectionCount}개 후보를 비교해 보세요.`,
@@ -296,26 +305,58 @@ export function UploadWorkbench() {
   }
 
   function handleTimingRoleToggle(role: CandidateTimingRole) {
-    setActiveTimingRoles((current) => ({
-      ...current,
-      [role]: !current[role],
-    }));
+    const nextValue = !activeTimingRoles[role];
+
+    startTransition(() => {
+      setActiveTimingRoles((current) => ({
+        ...current,
+        [role]: nextValue,
+      }));
+      setReviewStates((currentReviewStates) => {
+        const nextReviewStates = { ...currentReviewStates };
+
+        for (const event of activeAnalysis.candidateEvents) {
+          if (event.timingRole !== role) {
+            continue;
+          }
+
+          nextReviewStates[event.id] = nextValue ? "keep" : "unreviewed";
+        }
+
+        return nextReviewStates;
+      });
+    });
   }
 
   function handleSelectAllTimingRoles(nextValue: boolean) {
-    setActiveTimingRoles(createTimingRoleSelection(nextValue));
+    startTransition(() => {
+      const nextTimingRoles = createTimingRoleSelection(nextValue);
+      setActiveTimingRoles(nextTimingRoles);
+      setReviewStates((currentReviewStates) => {
+        const nextReviewStates = { ...currentReviewStates };
+
+        for (const event of activeAnalysis.candidateEvents) {
+          nextReviewStates[event.id] = nextValue ? "keep" : "unreviewed";
+        }
+
+        return nextReviewStates;
+      });
+    });
   }
 
   function handleCandidateStrategyChange(strategy: CandidateStrategy) {
     const nextVariant = getCandidateVariant(analysis, strategy);
-    setActiveCandidateStrategy(strategy);
-    setSelectedEventId((current) =>
-      current && nextVariant.candidateEvents.some((event) => event.id === current)
-        ? current
-        : nextVariant.candidateEvents[0]?.id ?? null,
-    );
-    setPhase("success");
-    setMessage(`${nextVariant.label} 방식으로 후보를 보고 있습니다. 타임라인과 재생, 내보내기도 이 기준을 따릅니다.`);
+    startTransition(() => {
+      setActiveCandidateStrategy(strategy);
+      setReviewStates((current) => mergeReviewStates(analysis, activeTimingRoles, current));
+      setSelectedEventId((current) =>
+        current && nextVariant.candidateEvents.some((event) => event.id === current)
+          ? current
+          : nextVariant.candidateEvents[0]?.id ?? null,
+      );
+      setPhase("success");
+      setMessage(`${nextVariant.label} 방식으로 후보를 보고 있습니다. 타임라인과 재생, 내보내기도 이 기준을 따릅니다.`);
+    });
   }
 
   async function handleSaveProject() {
@@ -368,8 +409,9 @@ export function UploadWorkbench() {
             ? loadedProject.snapshot.selectedEventId
             : restoredVariant.candidateEvents[0]?.id ?? null,
         );
-        setReviewStates(mergeReviewStates(loadedProject.snapshot.analysis, loadedProject.snapshot.reviewStates));
-        setActiveTimingRoles(normalizeTimingRoleSelection(loadedProject.snapshot.activeTimingRoles));
+        const restoredTimingRoles = normalizeTimingRoleSelection(loadedProject.snapshot.activeTimingRoles);
+        setReviewStates(mergeReviewStates(loadedProject.snapshot.analysis, restoredTimingRoles, loadedProject.snapshot.reviewStates));
+        setActiveTimingRoles(restoredTimingRoles);
         setPhase("success");
         setMessage(
           `${loadedProject.summary.title} 저장본을 복원했습니다. ${

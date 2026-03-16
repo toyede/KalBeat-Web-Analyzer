@@ -129,13 +129,20 @@ export function AnalysisTimeline({
   const selectedEvent =
     analysis.candidateEvents.find((event) => event.id === selectedEventId) ?? analysis.candidateEvents[0] ?? null;
   const selectedMeta = selectedEvent ? timingRoleMeta[selectedEvent.timingRole] : null;
+  const groupedEvents = useMemo(
+    () =>
+      Object.fromEntries(
+        timingRoleOrder.map((role) => [role, analysis.candidateEvents.filter((event) => event.timingRole === role)]),
+      ) as Record<CandidateTimingRole, AnalysisResponse["candidateEvents"]>,
+    [analysis.candidateEvents],
+  );
   const selectedGroupEvents = useMemo(
     () => analysis.candidateEvents.filter((event) => activeTimingRoles[event.timingRole]),
     [activeTimingRoles, analysis.candidateEvents],
   );
   const timelineRoles = useMemo(
-    () => timingRoleOrder.filter((role) => analysis.candidateEvents.some((event) => event.timingRole === role)),
-    [analysis.candidateEvents],
+    () => timingRoleOrder.filter((role) => groupedEvents[role].length > 0),
+    [groupedEvents],
   );
 
   const visibleFraction = 1 / zoomLevel;
@@ -505,7 +512,7 @@ export function AnalysisTimeline({
             <div className="timeline-lanes">
               {timelineRoles.map((role) => {
                 const meta = timingRoleMeta[role];
-                const groupEvents = analysis.candidateEvents.filter((event) => event.timingRole === role);
+                const groupEvents = groupedEvents[role];
                 const isRoleActive = activeTimingRoles[role];
 
                 return (
