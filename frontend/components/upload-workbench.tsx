@@ -8,6 +8,7 @@ import {
   createAnalysisForStrategy,
   getCandidateVariant,
   getCandidateVariants,
+  getCandidateStrategyLabel,
 } from "@/lib/candidate-strategy";
 import { timingRoleOrder } from "@/lib/candidate-event-meta";
 import {
@@ -38,7 +39,7 @@ import { CandidateEventsPanel } from "./candidate-events-panel";
 type Phase = "idle" | "uploading" | "success" | "error";
 
 const defaultMessage =
-  "샘플 결과가 먼저 보입니다. 실제 오디오 파일을 올리면 BPM, offset, 곡 길이와 함께 두 가지 후보 추출 방식의 차이를 바로 비교할 수 있습니다.";
+  "샘플 결과가 먼저 보입니다. 실제 오디오 파일을 올리면 BPM, offset, 곡 길이와 함께 반응형, 패턴형, 혼합형 후보를 바로 비교할 수 있습니다.";
 
 function getDefaultReviewState(event: CandidateEvent, activeTimingRoles: TimingRoleSelection): CandidateReviewState {
   return activeTimingRoles[event.timingRole] ? "keep" : "unreviewed";
@@ -253,10 +254,11 @@ export function UploadWorkbench() {
       const result = await analyzeAudio(selectedFile);
 
       startTransition(() => {
-        const defaultStrategy = result.defaultCandidateStrategy ?? "global";
+        const defaultStrategy = result.defaultCandidateStrategy ?? "hybrid";
         const defaultVariant = getCandidateVariant(result, defaultStrategy);
-        const globalCount = getCandidateVariant(result, "global").candidateEvents.length;
-        const sectionCount = getCandidateVariant(result, "section4bar").candidateEvents.length;
+        const reactiveCount = getCandidateVariant(result, "reactive").candidateEvents.length;
+        const patternCount = getCandidateVariant(result, "pattern").candidateEvents.length;
+        const hybridCount = getCandidateVariant(result, "hybrid").candidateEvents.length;
 
         setAnalysis(result);
         setActiveCandidateStrategy(defaultVariant.strategy);
@@ -266,7 +268,7 @@ export function UploadWorkbench() {
         setReviewStates(createInitialReviewState(result, nextTimingRoles));
         setPhase("success");
         setMessage(
-          `${result.audioFileName} 분석이 끝났습니다. 전곡 기준 ${globalCount}개, 4마디 기준 ${sectionCount}개 후보를 비교해 보세요.`,
+          `${result.audioFileName} 분석이 끝났습니다. 반응형 ${reactiveCount}개, 패턴형 ${patternCount}개, 혼합형 ${hybridCount}개 후보를 비교해 보세요.`,
         );
       });
     } catch (error) {
@@ -289,7 +291,7 @@ export function UploadWorkbench() {
       validateAudioFile(file);
       setSelectedFile(file);
       setPhase("idle");
-      setMessage(`${file.name} 준비 완료. 분석 실행을 누르면 두 가지 후보 추출 방식을 함께 계산합니다.`);
+      setMessage(`${file.name} 준비 완료. 분석 실행을 누르면 반응형, 패턴형, 혼합형 후보를 함께 계산합니다.`);
     } catch (error) {
       setSelectedFile(null);
       setPhase("error");
@@ -355,7 +357,7 @@ export function UploadWorkbench() {
           : nextVariant.candidateEvents[0]?.id ?? null,
       );
       setPhase("success");
-      setMessage(`${nextVariant.label} 방식으로 후보를 보고 있습니다. 타임라인과 재생, 내보내기도 이 기준을 따릅니다.`);
+      setMessage(`${nextVariant.label} 후보를 보고 있습니다. 타임라인과 재생, 내보내기도 이 기준을 따릅니다.`);
     });
   }
 
@@ -513,7 +515,7 @@ export function UploadWorkbench() {
         <div className="subpanel-header">
           <div>
             <p className="eyebrow">Candidate Compare</p>
-            <h3>후보 추출 방식 비교</h3>
+            <h3>플레이 스타일 후보 비교</h3>
           </div>
           <div className="timeline-summary">
             <span>현재 기준: {activeVariant.label}</span>
@@ -524,7 +526,12 @@ export function UploadWorkbench() {
           {candidateStrategyOrder.map((strategy) => {
             const variant = getCandidateVariant(analysis, strategy);
             const isActive = strategy === activeCandidateStrategy;
-            const delta = variant.candidateEvents.length - getCandidateVariant(analysis, "global").candidateEvents.length;
+            const helperText =
+              strategy === "reactive"
+                ? "단발 반응 중심"
+                : strategy === "pattern"
+                  ? "1~2마디 따라치기 중심"
+                  : "두 스타일 혼합";
 
             return (
               <button
@@ -536,11 +543,7 @@ export function UploadWorkbench() {
                 <strong>{variant.label}</strong>
                 <span>{variant.candidateEvents.length}개 후보</span>
                 <p>{variant.description}</p>
-                {strategy === "section4bar" ? (
-                  <small>{delta >= 0 ? `전곡 기준보다 +${delta}개` : `전곡 기준보다 ${delta}개`}</small>
-                ) : (
-                  <small>기본 비교 기준</small>
-                )}
+                <small>{helperText}</small>
               </button>
             );
           })}
@@ -586,7 +589,7 @@ export function UploadWorkbench() {
                   <div className="saved-project-meta">
                     <span>{formatSavedAt(project.savedAt)}</span>
                     <span>{project.hasAudio ? `음원 포함: ${project.audioFileName}` : "음원 미포함"}</span>
-                    <span>복원 기준 {project.activeCandidateStrategy === "section4bar" ? "4마디 기준" : "전곡 기준"}</span>
+                    <span>복원 기준 {getCandidateStrategyLabel(project.activeCandidateStrategy)}</span>
                     <span>후보 이벤트 {project.candidateEventCount}개</span>
                     <span>채용 {project.keptEventCount}개</span>
                   </div>
@@ -625,8 +628,8 @@ export function UploadWorkbench() {
       </div>
 
       <AnalysisTimeline
-        activeTimingRoles={activeTimingRoles}
         analysis={activeAnalysis}
+        variant={activeVariant}
         audioFile={selectedFile}
         onSelectEvent={setSelectedEventId}
         reviewStates={reviewStates}
@@ -634,12 +637,10 @@ export function UploadWorkbench() {
       />
 
       <CandidateEventsPanel
-        activeTimingRoles={activeTimingRoles}
         analysis={activeAnalysis}
+        variant={activeVariant}
         onReviewChange={handleReviewChange}
-        onSelectAllTimingRoles={handleSelectAllTimingRoles}
         onSelectEvent={setSelectedEventId}
-        onToggleTimingRole={handleTimingRoleToggle}
         reviewStates={reviewStates}
         selectedEventId={selectedEventId}
       />

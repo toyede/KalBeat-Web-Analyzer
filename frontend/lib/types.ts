@@ -1,7 +1,14 @@
 export type CandidateEventKind = "strong" | "steady" | "light";
 export type CandidateReviewState = "unreviewed" | "keep" | "skip";
 export type CandidateTimingRole = "pulse" | "offbeat" | "subdivision" | "thirtySecond" | "triplet" | "freeAccent";
-export type CandidateStrategy = "global" | "section4bar";
+export type CandidateStrategy = "reactive" | "pattern" | "hybrid";
+export type CandidateSceneFamily = "reactive" | "pattern";
+export type CandidateSceneType =
+  | "prep_1_attack"
+  | "prep_2_attack"
+  | "prep_3_attack"
+  | "combo_pattern_1bar"
+  | "combo_pattern_2bar";
 export type TimingRoleSelection = Record<CandidateTimingRole, boolean>;
 
 export type CandidateEvent = {
@@ -16,7 +23,29 @@ export type CandidateEvent = {
   confidence: number;
   strength: number;
   kind: CandidateEventKind;
+  sceneFamily: CandidateSceneFamily;
+  sceneType: CandidateSceneType;
+  sceneGroupId: string;
+  cueTimesSec: number[];
   reason: string;
+};
+
+export type PatternSegment = {
+  id: string;
+  bars: 1 | 2;
+  sceneType: "combo_pattern_1bar" | "combo_pattern_2bar";
+  cueStartBar: number;
+  cueEndBar: number;
+  responseStartBar: number;
+  responseEndBar: number;
+  cueStartSec: number;
+  cueEndSec: number;
+  responseStartSec: number;
+  responseEndSec: number;
+  score: number;
+  similarity: number;
+  cueEvents: CandidateEvent[];
+  responseEventIds: string[];
 };
 
 export type AnalysisResponse = {
@@ -38,6 +67,7 @@ export type CandidateVariant = {
   label: string;
   description: string;
   candidateEvents: CandidateEvent[];
+  patternSegments: PatternSegment[];
 };
 
 export type ProjectSnapshot = {

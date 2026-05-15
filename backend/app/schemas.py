@@ -2,7 +2,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CandidateStrategy = Literal["global", "section4bar"]
+CandidateStrategy = Literal["reactive", "pattern", "hybrid"]
+CandidateSceneFamily = Literal["reactive", "pattern"]
+CandidateSceneType = Literal[
+    "prep_1_attack",
+    "prep_2_attack",
+    "prep_3_attack",
+    "combo_pattern_1bar",
+    "combo_pattern_2bar",
+]
 
 
 class CandidateEvent(BaseModel):
@@ -17,7 +25,29 @@ class CandidateEvent(BaseModel):
     confidence: float = Field(..., ge=0, le=1)
     strength: float = Field(..., ge=0, le=1)
     kind: Literal["strong", "steady", "light"]
+    sceneFamily: CandidateSceneFamily
+    sceneType: CandidateSceneType
+    sceneGroupId: str = ""
+    cueTimesSec: list[float] = Field(default_factory=list)
     reason: str
+
+
+class PatternSegment(BaseModel):
+    id: str
+    bars: Literal[1, 2]
+    sceneType: Literal["combo_pattern_1bar", "combo_pattern_2bar"]
+    cueStartBar: int = Field(..., ge=1)
+    cueEndBar: int = Field(..., ge=1)
+    responseStartBar: int = Field(..., ge=1)
+    responseEndBar: int = Field(..., ge=1)
+    cueStartSec: float = Field(..., ge=0)
+    cueEndSec: float = Field(..., ge=0)
+    responseStartSec: float = Field(..., ge=0)
+    responseEndSec: float = Field(..., ge=0)
+    score: float = Field(..., ge=0, le=1)
+    similarity: float = Field(..., ge=0, le=1)
+    cueEvents: list[CandidateEvent] = Field(default_factory=list)
+    responseEventIds: list[str] = Field(default_factory=list)
 
 
 class CandidateVariant(BaseModel):
@@ -25,6 +55,7 @@ class CandidateVariant(BaseModel):
     label: str
     description: str
     candidateEvents: list[CandidateEvent] = Field(default_factory=list)
+    patternSegments: list[PatternSegment] = Field(default_factory=list)
 
 
 class AnalysisResponse(BaseModel):
@@ -36,6 +67,6 @@ class AnalysisResponse(BaseModel):
     globalBpm: float = Field(..., gt=0)
     offsetSec: float = Field(..., ge=0)
     songLengthSec: float = Field(..., ge=0)
-    defaultCandidateStrategy: CandidateStrategy = "global"
+    defaultCandidateStrategy: CandidateStrategy = "hybrid"
     candidateEvents: list[CandidateEvent] = Field(default_factory=list)
     candidateVariants: list[CandidateVariant] = Field(default_factory=list)

@@ -546,6 +546,24 @@ button {
   transform: translateY(-50%);
 }
 
+.timeline-segment {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  border-radius: 10px;
+  pointer-events: none;
+}
+
+.timeline-segment.cue {
+  background: rgba(17, 17, 17, 0.08);
+  border: 1px dashed rgba(17, 17, 17, 0.22);
+}
+
+.timeline-segment.response {
+  background: rgba(17, 17, 17, 0.12);
+  border: 1px solid rgba(17, 17, 17, 0.16);
+}
+
 .timeline-dot {
   position: absolute;
   top: 50%;
@@ -556,6 +574,15 @@ button {
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.26);
   transform: translateY(-50%);
+}
+
+.timeline-dot.cue {
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border: 1px solid rgba(17, 17, 17, 0.42);
+  background: #ffffff;
+  opacity: 0.88;
 }
 
 .timeline-dot.light {

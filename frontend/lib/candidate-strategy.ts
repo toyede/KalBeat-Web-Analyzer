@@ -1,29 +1,44 @@
 import type { AnalysisResponse, CandidateStrategy, CandidateVariant } from "@/lib/types";
 
-export const candidateStrategyOrder: CandidateStrategy[] = ["global", "section4bar"];
+export const candidateStrategyOrder: CandidateStrategy[] = ["reactive", "pattern", "hybrid"];
 
 const fallbackVariantMeta: Record<CandidateStrategy, Pick<CandidateVariant, "label" | "description">> = {
-  global: {
-    label: "전곡 기준",
-    description: "곡 전체 onset 에너지를 한 기준으로 보고 후보를 추출합니다.",
+  reactive: {
+    label: "반응형",
+    description: "준비 박 1~3개 뒤 마지막 한 번을 치는 반응형 후보만 모아 봅니다.",
   },
-  section4bar: {
-    label: "4마디 기준",
-    description: "4마디 단위로 onset 세기를 다시 평가해 조용한 구간의 상대 강세를 더 반영합니다.",
+  pattern: {
+    label: "패턴형",
+    description: "앞의 예시와 뒤의 입력이 동일한 1~2마디 패턴 후보만 모아 봅니다.",
+  },
+  hybrid: {
+    label: "반응형 + 패턴형",
+    description: "동일 패턴 구간과 준비-공격 구간을 함께 섞어 곡 흐름을 비교합니다.",
   },
 };
 
+export function getCandidateStrategyLabel(strategy: CandidateStrategy) {
+  return fallbackVariantMeta[strategy].label;
+}
+
 export function getCandidateVariants(analysis: AnalysisResponse) {
   if (analysis.candidateVariants.length > 0) {
-    return analysis.candidateVariants;
+    return analysis.candidateVariants.map((variant) => ({
+      ...variant,
+      label: fallbackVariantMeta[variant.strategy].label,
+      description: fallbackVariantMeta[variant.strategy].description,
+    }));
   }
+
+  const fallbackStrategy = analysis.defaultCandidateStrategy ?? "hybrid";
 
   return [
     {
-      strategy: analysis.defaultCandidateStrategy ?? "global",
-      label: fallbackVariantMeta.global.label,
-      description: fallbackVariantMeta.global.description,
+      strategy: fallbackStrategy,
+      label: fallbackVariantMeta[fallbackStrategy].label,
+      description: fallbackVariantMeta[fallbackStrategy].description,
       candidateEvents: analysis.candidateEvents,
+      patternSegments: [],
     },
   ];
 }
@@ -43,7 +58,7 @@ export function createAnalysisForStrategy(analysis: AnalysisResponse, strategy: 
 
   return {
     ...analysis,
-    defaultCandidateStrategy: analysis.defaultCandidateStrategy ?? "global",
+    defaultCandidateStrategy: analysis.defaultCandidateStrategy ?? "hybrid",
     candidateEvents: variant.candidateEvents,
     candidateVariants: getCandidateVariants(analysis),
   };

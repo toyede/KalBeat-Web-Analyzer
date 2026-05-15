@@ -2,22 +2,43 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type MutableRefObject } from "react";
 
-import { timingRoleMeta, timingRoleOrder } from "@/lib/candidate-event-meta";
-import type { AnalysisResponse, CandidateReviewState, CandidateTimingRole } from "@/lib/types";
-
-type TimingRoleSelection = Record<CandidateTimingRole, boolean>;
+import { candidateSceneTypeMeta, candidateSceneTypeOrder } from "@/lib/candidate-scene-meta";
+import { timingRoleMeta } from "@/lib/candidate-event-meta";
+import type { AnalysisResponse, CandidateReviewState, CandidateVariant, PatternSegment } from "@/lib/types";
 
 const MIN_TIMELINE_ZOOM = 1;
 const MAX_TIMELINE_ZOOM = 10;
 const TIMELINE_ZOOM_STEP = 0.5;
 
 type AnalysisTimelineProps = {
-  activeTimingRoles: TimingRoleSelection;
   analysis: AnalysisResponse;
+  variant: CandidateVariant;
   audioFile: File | null;
   selectedEventId: string | null;
   reviewStates: Record<string, CandidateReviewState>;
   onSelectEvent: (eventId: string) => void;
+};
+
+type TimelineLane = {
+  id: string;
+  sceneType: PatternSegment["sceneType"] | CandidateVariant["candidateEvents"][number]["sceneType"];
+  label: string;
+  responseEvents: CandidateVariant["candidateEvents"];
+  cueEvents: CueMarker[];
+  patternSegments: PatternSegment[];
+};
+
+type CueMarker = {
+  id: string;
+  timeSec: number;
+  kind: CandidateVariant["candidateEvents"][number]["kind"];
+};
+
+type PreviewEvent = {
+  id: string;
+  timeSec: number;
+  kind: CandidateVariant["candidateEvents"][number]["kind"];
+  tone: "cue" | "input";
 };
 
 type WindowWithWebkitAudio = Window &
@@ -48,8 +69,7 @@ function getFileKey(file: File) {
 }
 
 function createAudioContext() {
-  const AudioContextConstructor =
-    window.AudioContext ?? (window as WindowWithWebkitAudio).webkitAudioContext;
+  const AudioContextConstructor = window.AudioContext ?? (window as WindowWithWebkitAudio).webkitAudioContext;
 
   if (!AudioContextConstructor) {
     throw new Error("이 브라우저에서는 오디오 미리듣기를 지원하지 않습니다.");
@@ -102,9 +122,99 @@ function createPlaceholderBars(count = 240) {
   });
 }
 
+function buildTimelineLanes(variant: CandidateVariant): TimelineLane[] {
+  const laneSceneTypes =
+    variant.strategy === "reactive"
+      ? candidateSceneTypeOrder.filter((sceneType) => candidateSceneTypeMeta[sceneType].family === "reactive")
+      : variant.strategy === "pattern"
+        ? candidateSceneTypeOrder.filter((sceneType) => candidateSceneTypeMeta[sceneType].family === "pattern")
+        : candidateSceneTypeOrder;
+
+  return laneSceneTypes.flatMap((sceneType) => {
+    const responseEvents = variant.candidateEvents.filter((event) => event.sceneType === sceneType);
+    const patternSegments = variant.patternSegments.filter((segment) => segment.sceneType === sceneType);
+    const cueEventMap = new Map<string, CueMarker>();
+
+    for (const segment of patternSegments) {
+      for (const event of segment.cueEvents) {
+        cueEventMap.set(event.id, {
+          id: event.id,
+          timeSec: event.timeSec,
+          kind: event.kind,
+        });
+      }
+    }
+
+    for (const event of responseEvents) {
+      for (const [cueIndex, cueTimeSec] of event.cueTimesSec.entries()) {
+        const cueId = `${event.sceneGroupId || event.id}-cue-${cueIndex + 1}`;
+
+        if (!cueEventMap.has(cueId)) {
+          cueEventMap.set(cueId, {
+            id: cueId,
+            timeSec: cueTimeSec,
+            kind: "light",
+          });
+        }
+      }
+    }
+
+    const cueEvents = Array.from(cueEventMap.values()).sort((left, right) => left.timeSec - right.timeSec);
+
+    if (responseEvents.length === 0 && cueEvents.length === 0 && patternSegments.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        id: sceneType,
+        sceneType,
+        label: candidateSceneTypeMeta[sceneType].laneLabel,
+        responseEvents,
+        cueEvents,
+        patternSegments,
+      },
+    ];
+  });
+}
+
+function buildPreviewEvents(events: CandidateVariant["candidateEvents"], tone: "cue" | "input"): PreviewEvent[] {
+  return events.map((event) => ({
+    id: event.id,
+    timeSec: event.timeSec,
+    kind: event.kind,
+    tone,
+  }));
+}
+
+function buildCuePreviewEvents(events: CueMarker[]): PreviewEvent[] {
+  return events.map((event) => ({
+    id: event.id,
+    timeSec: event.timeSec,
+    kind: event.kind,
+    tone: "cue" as const,
+  }));
+}
+
+function buildPreviewEventsForLanes(lanes: TimelineLane[]) {
+  const eventMap = new Map<string, PreviewEvent>();
+
+  for (const lane of lanes) {
+    for (const event of buildCuePreviewEvents(lane.cueEvents)) {
+      eventMap.set(event.id, event);
+    }
+
+    for (const event of buildPreviewEvents(lane.responseEvents, "input")) {
+      eventMap.set(event.id, event);
+    }
+  }
+
+  return Array.from(eventMap.values()).sort((left, right) => left.timeSec - right.timeSec);
+}
+
 export function AnalysisTimeline({
-  activeTimingRoles,
   analysis,
+  variant,
   audioFile,
   selectedEventId,
   reviewStates,
@@ -112,13 +222,15 @@ export function AnalysisTimeline({
 }: AnalysisTimelineProps) {
   const [effectFile, setEffectFile] = useState<File | null>(null);
   const [waveformBars, setWaveformBars] = useState<number[]>(() => createPlaceholderBars());
-  const [waveformStatus, setWaveformStatus] = useState("실제 파형은 업로드한 파일을 기준으로 브라우저에서 계산합니다.");
-  const [previewStatus, setPreviewStatus] = useState("음원 볼륨을 0%로 두면 효과음만 따로 들을 수 있습니다.");
+  const [waveformStatus, setWaveformStatus] = useState("실제 파형은 업로드한 오디오를 기준으로 브라우저에서 계산합니다.");
+  const [previewStatus, setPreviewStatus] = useState("효과음이 없으면 합성 클릭으로 후보 타이밍을 들려줍니다.");
   const [isPlaying, setIsPlaying] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(2);
   const [panPercent, setPanPercent] = useState(0);
   const [musicVolume, setMusicVolume] = useState(55);
   const [effectVolume, setEffectVolume] = useState(100);
+  const [cuePitch, setCuePitch] = useState(82);
+  const [inputPitch, setInputPitch] = useState(118);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const musicBufferRef = useRef<{ key: string; buffer: AudioBuffer } | null>(null);
@@ -126,23 +238,18 @@ export function AnalysisTimeline({
   const activeSourcesRef = useRef<AudioScheduledSourceNode[]>([]);
   const playbackTimerRef = useRef<number | null>(null);
 
-  const selectedEvent =
-    analysis.candidateEvents.find((event) => event.id === selectedEventId) ?? analysis.candidateEvents[0] ?? null;
-  const selectedMeta = selectedEvent ? timingRoleMeta[selectedEvent.timingRole] : null;
-  const groupedEvents = useMemo(
-    () =>
-      Object.fromEntries(
-        timingRoleOrder.map((role) => [role, analysis.candidateEvents.filter((event) => event.timingRole === role)]),
-      ) as Record<CandidateTimingRole, AnalysisResponse["candidateEvents"]>,
-    [analysis.candidateEvents],
-  );
-  const selectedGroupEvents = useMemo(
-    () => analysis.candidateEvents.filter((event) => activeTimingRoles[event.timingRole]),
-    [activeTimingRoles, analysis.candidateEvents],
-  );
-  const timelineRoles = useMemo(
-    () => timingRoleOrder.filter((role) => groupedEvents[role].length > 0),
-    [groupedEvents],
+  const timelineLanes = useMemo(() => buildTimelineLanes(variant), [variant]);
+  const previewEvents = useMemo(() => buildPreviewEventsForLanes(timelineLanes), [timelineLanes]);
+  const selectedEvent = variant.candidateEvents.find((event) => event.id === selectedEventId) ?? variant.candidateEvents[0] ?? null;
+  const selectedLane =
+    timelineLanes.find((lane) => lane.responseEvents.some((event) => event.id === selectedEvent?.id)) ??
+    timelineLanes.find((lane) => lane.responseEvents.length > 0) ??
+    null;
+  const selectedSceneMeta = selectedEvent ? candidateSceneTypeMeta[selectedEvent.sceneType] : null;
+  const selectedTimingMeta = selectedEvent ? timingRoleMeta[selectedEvent.timingRole] : null;
+  const lanePreviewEvents = useMemo(
+    () => (selectedLane ? buildPreviewEventsForLanes([selectedLane]) : []),
+    [selectedLane],
   );
 
   const visibleFraction = 1 / zoomLevel;
@@ -157,7 +264,7 @@ export function AnalysisTimeline({
 
     if (!audioFile) {
       setWaveformBars(createPlaceholderBars());
-      setWaveformStatus("실제 파형은 업로드한 파일을 기준으로 브라우저에서 계산합니다.");
+      setWaveformStatus("실제 파형은 업로드한 오디오를 기준으로 브라우저에서 계산합니다.");
       return () => {
         cancelled = true;
       };
@@ -172,7 +279,7 @@ export function AnalysisTimeline({
         }
 
         setWaveformBars(bars);
-        setWaveformStatus("그룹별 레인을 확대해서 이벤트 점 위치를 비교할 수 있습니다.");
+        setWaveformStatus("오디오 파형과 씬 후보 위치를 같은 축에서 비교할 수 있습니다.");
       })
       .catch(() => {
         if (cancelled) {
@@ -180,7 +287,7 @@ export function AnalysisTimeline({
         }
 
         setWaveformBars(createPlaceholderBars());
-        setWaveformStatus("파형 계산에 실패해서 기본 타임라인으로 표시합니다.");
+        setWaveformStatus("파형 계산에 실패해서 기본 시각화로 대체했습니다.");
       });
 
     return () => {
@@ -201,7 +308,7 @@ export function AnalysisTimeline({
 
   useEffect(() => {
     syncViewportToPan();
-  }, [syncViewportToPan, zoomLevel, waveformBars.length, analysis.candidateEvents.length, timelineRoles.length]);
+  }, [syncViewportToPan, zoomLevel, waveformBars.length, timelineLanes.length, variant.candidateEvents.length]);
 
   const stopPlayback = useCallback((statusMessage?: string) => {
     for (const source of activeSourcesRef.current) {
@@ -249,11 +356,11 @@ export function AnalysisTimeline({
     return decoded;
   }
 
-  function scheduleSynthClick(context: AudioContext, when: number, gainScale: number) {
+  function scheduleSynthClick(context: AudioContext, when: number, gainScale: number, pitchRate: number) {
     const oscillator = context.createOscillator();
     const gainNode = context.createGain();
     oscillator.type = "triangle";
-    oscillator.frequency.value = 1950;
+    oscillator.frequency.value = 1950 * pitchRate;
     gainNode.gain.setValueAtTime(0.0001, when);
     gainNode.gain.exponentialRampToValueAtTime(0.24 * gainScale, when + 0.002);
     gainNode.gain.exponentialRampToValueAtTime(0.0001, when + 0.055);
@@ -278,9 +385,7 @@ export function AnalysisTimeline({
 
   function handleZoomChange(event: ChangeEvent<HTMLInputElement>) {
     const nextZoom = Number.parseFloat(event.target.value);
-    setZoomLevel(
-      clamp(Number.isFinite(nextZoom) ? nextZoom : MIN_TIMELINE_ZOOM, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM),
-    );
+    setZoomLevel(clamp(Number.isFinite(nextZoom) ? nextZoom : MIN_TIMELINE_ZOOM, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM));
   }
 
   function handlePanChange(event: ChangeEvent<HTMLInputElement>) {
@@ -293,6 +398,14 @@ export function AnalysisTimeline({
 
   function handleEffectVolumeChange(event: ChangeEvent<HTMLInputElement>) {
     setEffectVolume(clamp(Number.parseFloat(event.target.value), 0, 140));
+  }
+
+  function handleCuePitchChange(event: ChangeEvent<HTMLInputElement>) {
+    setCuePitch(clamp(Number.parseFloat(event.target.value), 60, 160));
+  }
+
+  function handleInputPitchChange(event: ChangeEvent<HTMLInputElement>) {
+    setInputPitch(clamp(Number.parseFloat(event.target.value), 60, 160));
   }
 
   function focusSelectedEvent() {
@@ -308,22 +421,17 @@ export function AnalysisTimeline({
 
   async function playPreview(mode: "all" | "group" | "focus") {
     if (!audioFile) {
-      setPreviewStatus("실제 음원 파일을 먼저 선택하고 분석해 주세요.");
+      setPreviewStatus("오디오 파일을 먼저 선택하고 분석해 주세요.");
       return;
     }
 
-    if (analysis.candidateEvents.length === 0) {
-      setPreviewStatus("현재 분석 결과에는 마킹할 후보 이벤트가 없습니다.");
+    if (variant.candidateEvents.length === 0) {
+      setPreviewStatus("현재 보기에는 재생할 후보가 없습니다.");
       return;
     }
 
     if (mode === "focus" && !selectedEvent) {
       setPreviewStatus("먼저 미리들을 이벤트를 하나 선택해 주세요.");
-      return;
-    }
-
-    if (mode === "group" && selectedGroupEvents.length === 0) {
-      setPreviewStatus("재생할 그룹이 선택되지 않았습니다. 위 그룹 카드에서 먼저 선택해 주세요.");
       return;
     }
 
@@ -336,18 +444,34 @@ export function AnalysisTimeline({
 
       const musicBuffer = await ensureAudioBuffer(audioFile, musicBufferRef);
       const fxBuffer = effectFile ? await ensureAudioBuffer(effectFile, effectBufferRef) : null;
-      const previewStart = mode === "focus" && selectedEvent ? Math.max(selectedEvent.timeSec - 1.2, 0) : 0;
+      const previewSource =
+        mode === "group"
+          ? lanePreviewEvents
+          : mode === "focus" && selectedEvent
+            ? [
+                ...buildCuePreviewEvents(
+                  selectedEvent.cueTimesSec.map((cueTimeSec, cueIndex) => ({
+                    id: `${selectedEvent.sceneGroupId || selectedEvent.id}-focus-cue-${cueIndex + 1}`,
+                    timeSec: cueTimeSec,
+                    kind: "light" as const,
+                  })),
+                ),
+                ...buildPreviewEvents(
+                  variant.candidateEvents.filter((event) => event.sceneGroupId === selectedEvent.sceneGroupId),
+                  "input",
+                ),
+              ]
+            : previewEvents;
+      const previewStart =
+        mode === "focus" && selectedEvent
+          ? Math.max(selectedEvent.timeSec - 1.2, 0)
+          : Math.max(Math.min(...previewSource.map((event) => event.timeSec), 0), 0);
       const previewDuration =
         mode === "focus" && selectedEvent
           ? Math.min(4, Math.max(1.8, musicBuffer.duration - previewStart))
           : musicBuffer.duration;
       const previewEnd = Math.min(musicBuffer.duration, previewStart + previewDuration);
-      const previewEvents =
-        mode === "focus" && selectedEvent
-          ? [selectedEvent]
-          : mode === "group"
-            ? selectedGroupEvents.filter((event) => event.timeSec >= previewStart && event.timeSec <= previewEnd)
-            : analysis.candidateEvents.filter((event) => event.timeSec >= previewStart && event.timeSec <= previewEnd);
+      const previewEventsInRange = previewSource.filter((event) => event.timeSec >= previewStart && event.timeSec <= previewEnd);
       const startAt = context.currentTime + 0.05;
       const musicSource = context.createBufferSource();
       const musicGain = context.createGain();
@@ -359,15 +483,20 @@ export function AnalysisTimeline({
       musicSource.start(startAt, previewStart, previewEnd - previewStart);
       activeSourcesRef.current.push(musicSource);
 
-      for (const event of previewEvents) {
+      for (const event of previewEventsInRange) {
         const cueAt = startAt + (event.timeSec - previewStart);
+        const pitchRate = (event.tone === "cue" ? cuePitch : inputPitch) / 100;
 
         if (fxBuffer) {
           const effectSource = context.createBufferSource();
           const effectGain = context.createGain();
           effectSource.buffer = fxBuffer;
+          effectSource.playbackRate.value = pitchRate;
           effectGain.gain.value =
-            ((event.kind === "strong" ? 0.86 : event.kind === "steady" ? 0.7 : 0.56) * effectVolume) / 100;
+            ((event.kind === "strong" ? 0.86 : event.kind === "steady" ? 0.7 : 0.56) *
+              (event.tone === "cue" ? 0.72 : 1) *
+              effectVolume) /
+            100;
           effectSource.connect(effectGain);
           effectGain.connect(context.destination);
           effectSource.start(cueAt);
@@ -375,20 +504,18 @@ export function AnalysisTimeline({
           continue;
         }
 
-        scheduleSynthClick(context, cueAt, effectVolume / 100);
+        scheduleSynthClick(context, cueAt, ((event.tone === "cue" ? 0.72 : 1) * effectVolume) / 100, pitchRate);
       }
 
       setIsPlaying(true);
       setPreviewStatus(
-        `${
-          effectFile ? `${effectFile.name} 효과음` : "합성 클릭"
-        }으로 ${
-          mode === "focus" ? "선택 이벤트" : mode === "group" ? "선택 그룹" : "전체 이벤트"
-        }를 재생합니다. 음원 ${musicVolume}%, 효과음 ${effectVolume}%`,
+        `${effectFile ? `${effectFile.name} 효과음` : "합성 클릭"}으로 ${
+          mode === "focus" ? "선택 이벤트" : mode === "group" ? "현재 씬 타입" : "현재 보기 전체"
+        }를 재생합니다. 제시 피치 ${cuePitch}%, 입력 피치 ${inputPitch}%`,
       );
 
       playbackTimerRef.current = window.setTimeout(() => {
-        stopPlayback("미리듣기가 끝났습니다.");
+        stopPlayback("미리듣기가 종료되었습니다.");
       }, Math.ceil((previewEnd - previewStart) * 1000) + 180);
     } catch (error) {
       stopPlayback(error instanceof Error ? error.message : "오디오 미리듣기를 시작하지 못했습니다.");
@@ -405,7 +532,7 @@ export function AnalysisTimeline({
       return;
     }
 
-    setPreviewStatus("효과음 파일이 없으면 합성 클릭으로 미리듣기합니다.");
+    setPreviewStatus("효과음 파일이 없으면 합성 클릭으로 미리듣기 합니다.");
   }
 
   return (
@@ -413,12 +540,12 @@ export function AnalysisTimeline({
       <div className="subpanel-header">
         <div>
           <p className="eyebrow">Timeline</p>
-          <h3>타임라인과 이벤트 레인</h3>
+          <h3>씬 후보 타임라인</h3>
         </div>
         <div className="timeline-summary">
-          <span>{analysis.candidateEvents.length}개 후보 이벤트</span>
-          <span>{timelineRoles.length}개 레인</span>
-          <span>선택 그룹 {selectedGroupEvents.length}개</span>
+          <span>{variant.candidateEvents.length}개 후보</span>
+          <span>{timelineLanes.length}개 씬 레인</span>
+          <span>패턴 구간 {variant.patternSegments.length}개</span>
         </div>
       </div>
 
@@ -430,11 +557,7 @@ export function AnalysisTimeline({
           <div className="toolbar-row">
             <button
               className="mini-button"
-              onClick={() =>
-                setZoomLevel((current) =>
-                  clamp(current - TIMELINE_ZOOM_STEP, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM),
-                )
-              }
+              onClick={() => setZoomLevel((current) => clamp(current - TIMELINE_ZOOM_STEP, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM))}
               type="button"
             >
               -
@@ -449,11 +572,7 @@ export function AnalysisTimeline({
             />
             <button
               className="mini-button"
-              onClick={() =>
-                setZoomLevel((current) =>
-                  clamp(current + TIMELINE_ZOOM_STEP, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM),
-                )
-              }
+              onClick={() => setZoomLevel((current) => clamp(current + TIMELINE_ZOOM_STEP, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM))}
               type="button"
             >
               +
@@ -510,37 +629,69 @@ export function AnalysisTimeline({
             </div>
 
             <div className="timeline-lanes">
-              {timelineRoles.map((role) => {
-                const meta = timingRoleMeta[role];
-                const groupEvents = groupedEvents[role];
-                const isRoleActive = activeTimingRoles[role];
+              {timelineLanes.map((lane) => (
+                <div className="timeline-track-row lane-row" key={lane.id}>
+                  <div className="timeline-track-label">{lane.label}</div>
+                  <div className="timeline-lane-track">
+                    <div className="timeline-lane-rule" aria-hidden="true" />
+                    {lane.patternSegments.map((segment) => {
+                      const cueLeft = analysis.songLengthSec > 0 ? (segment.cueStartSec / analysis.songLengthSec) * 100 : 0;
+                      const cueWidth =
+                        analysis.songLengthSec > 0
+                          ? Math.max(((segment.cueEndSec - segment.cueStartSec) / analysis.songLengthSec) * 100, 0.8)
+                          : 0;
+                      const responseLeft =
+                        analysis.songLengthSec > 0 ? (segment.responseStartSec / analysis.songLengthSec) * 100 : 0;
+                      const responseWidth =
+                        analysis.songLengthSec > 0
+                          ? Math.max(((segment.responseEndSec - segment.responseStartSec) / analysis.songLengthSec) * 100, 0.8)
+                          : 0;
 
-                return (
-                  <div className={`timeline-track-row lane-row ${isRoleActive ? "" : "lane-disabled"}`} key={role}>
-                    <div className="timeline-track-label">{meta.shortLabel}</div>
-                    <div className="timeline-lane-track">
-                      <div className="timeline-lane-rule" aria-hidden="true" />
-                      {groupEvents.map((event) => {
-                        const reviewState = reviewStates[event.id] ?? "unreviewed";
-                        const position = analysis.songLengthSec > 0 ? (event.timeSec / analysis.songLengthSec) * 100 : 0;
-
-                        return (
-                          <button
-                            key={event.id}
-                            type="button"
-                            className={`timeline-dot ${event.kind} ${reviewState} ${
-                              event.id === selectedEventId ? "selected" : ""
-                            } ${isRoleActive ? "" : "group-disabled"}`}
-                            onClick={() => onSelectEvent(event.id)}
-                            style={{ left: `${Math.min(position, 100)}%` }}
-                            title={`${meta.label} · Beat ${event.beatIndex} · ${event.timeSec.toFixed(3)}s`}
+                      return (
+                        <div key={`${lane.id}-${segment.id}`}>
+                          <span
+                            aria-hidden="true"
+                            className="timeline-segment cue"
+                            style={{ left: `${Math.min(cueLeft, 100)}%`, width: `${Math.min(cueWidth, 100)}%` }}
                           />
-                        );
-                      })}
-                    </div>
+                          <span
+                            aria-hidden="true"
+                            className="timeline-segment response"
+                            style={{ left: `${Math.min(responseLeft, 100)}%`, width: `${Math.min(responseWidth, 100)}%` }}
+                          />
+                        </div>
+                      );
+                    })}
+                    {lane.cueEvents.map((event) => {
+                      const position = analysis.songLengthSec > 0 ? (event.timeSec / analysis.songLengthSec) * 100 : 0;
+                      return (
+                        <span
+                          key={event.id}
+                          aria-hidden="true"
+                          className={`timeline-dot cue ${event.kind}`}
+                          style={{ left: `${Math.min(position, 100)}%` }}
+                          title={`${lane.label} 예비 박 · ${event.timeSec.toFixed(3)}s`}
+                        />
+                      );
+                    })}
+                    {lane.responseEvents.map((event) => {
+                      const reviewState = reviewStates[event.id] ?? "unreviewed";
+                      const position = analysis.songLengthSec > 0 ? (event.timeSec / analysis.songLengthSec) * 100 : 0;
+
+                      return (
+                        <button
+                          key={event.id}
+                          type="button"
+                          className={`timeline-dot ${event.kind} ${reviewState} ${event.id === selectedEventId ? "selected" : ""}`}
+                          onClick={() => onSelectEvent(event.id)}
+                          style={{ left: `${Math.min(position, 100)}%` }}
+                          title={`${candidateSceneTypeMeta[event.sceneType].label} · Beat ${event.beatIndex} · ${event.timeSec.toFixed(3)}s`}
+                        />
+                      );
+                    })}
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -560,38 +711,39 @@ export function AnalysisTimeline({
 
         <div className="volume-grid">
           <label className="slider-field">
-            <span>음원 볼륨 {musicVolume}%</span>
+            <span>원본 볼륨 {musicVolume}%</span>
             <input max="100" min="0" onChange={handleMusicVolumeChange} step="1" type="range" value={musicVolume} />
           </label>
           <label className="slider-field">
             <span>효과음 볼륨 {effectVolume}%</span>
-            <input
-              max="140"
-              min="0"
-              onChange={handleEffectVolumeChange}
-              step="1"
-              type="range"
-              value={effectVolume}
-            />
+            <input max="140" min="0" onChange={handleEffectVolumeChange} step="1" type="range" value={effectVolume} />
+          </label>
+          <label className="slider-field">
+            <span>패턴 제시 피치 {cuePitch}%</span>
+            <input max="160" min="60" onChange={handleCuePitchChange} step="1" type="range" value={cuePitch} />
+          </label>
+          <label className="slider-field">
+            <span>입력 타이밍 피치 {inputPitch}%</span>
+            <input max="160" min="60" onChange={handleInputPitchChange} step="1" type="range" value={inputPitch} />
           </label>
         </div>
 
         <div className="preview-buttons">
           <button
             className="secondary-button"
-            disabled={!audioFile || analysis.candidateEvents.length === 0}
+            disabled={!audioFile || variant.candidateEvents.length === 0}
             onClick={() => void playPreview("all")}
             type="button"
           >
-            전체 재생
+            전체 후보 재생
           </button>
           <button
             className="secondary-button"
-            disabled={!audioFile || selectedGroupEvents.length === 0}
+            disabled={!audioFile || !selectedLane}
             onClick={() => void playPreview("group")}
             type="button"
           >
-            선택 그룹 재생
+            현재 씬 타입 재생
           </button>
           <button
             className="secondary-button"
@@ -601,12 +753,7 @@ export function AnalysisTimeline({
           >
             선택 이벤트 재생
           </button>
-          <button
-            className="ghost-button"
-            disabled={!isPlaying}
-            onClick={() => stopPlayback("미리듣기를 중지했습니다.")}
-            type="button"
-          >
+          <button className="ghost-button" disabled={!isPlaying} onClick={() => stopPlayback("미리듣기를 중지했습니다.")} type="button">
             정지
           </button>
         </div>
@@ -615,24 +762,26 @@ export function AnalysisTimeline({
       <p className="helper-text">{previewStatus}</p>
 
       <div className="selected-event-card">
-        {selectedEvent && selectedMeta ? (
+        {selectedEvent && selectedSceneMeta && selectedTimingMeta ? (
           <>
             <div>
               <span className="metric-label">선택 이벤트</span>
               <strong className="selected-event-title">
-                {selectedMeta.label} · Beat {selectedEvent.beatIndex} · {selectedEvent.timeSec.toFixed(3)}s
+                {selectedSceneMeta.label} · Beat {selectedEvent.beatIndex} · {selectedEvent.timeSec.toFixed(3)}s
               </strong>
             </div>
             <div className="selected-event-meta">
+              <span>{selectedSceneMeta.family === "reactive" ? "반응형" : "패턴형"}</span>
+              <span>{selectedTimingMeta.label}</span>
               <span>Bar {selectedEvent.barIndex}</span>
               <span>{formatSlotLabel(selectedEvent.slotInBeat, selectedEvent.gridDivision)}</span>
               <span>confidence {Math.round(selectedEvent.confidence * 100)}%</span>
               <span>strength {Math.round(selectedEvent.strength * 100)}%</span>
             </div>
-            <p>{selectedMeta.description}</p>
+            <p>{selectedEvent.reason}</p>
           </>
         ) : (
-          <p>후보 이벤트가 생기면 여기에서 선택된 마커 정보를 볼 수 있습니다.</p>
+          <p>후보 이벤트를 선택하면 여기에서 씬 타입과 타이밍 설명을 볼 수 있습니다.</p>
         )}
       </div>
     </section>

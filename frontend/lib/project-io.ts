@@ -1,12 +1,15 @@
 import { candidateStrategyOrder, getCandidateVariant } from "@/lib/candidate-strategy";
+import { candidateSceneTypeMeta } from "@/lib/candidate-scene-meta";
 import { timingRoleOrder } from "@/lib/candidate-event-meta";
 import type {
   AnalysisResponse,
   CandidateEvent,
   CandidateReviewState,
+  CandidateSceneType,
   CandidateStrategy,
   CandidateTimingRole,
   CandidateVariant,
+  PatternSegment,
   ProjectSnapshot,
   ResultExport,
   SavedProjectSummary,
@@ -100,7 +103,41 @@ function normalizeTimingRoleSelection(value: unknown): TimingRoleSelection | nul
 }
 
 function normalizeCandidateStrategy(value: unknown): CandidateStrategy {
-  return value === "section4bar" ? "section4bar" : "global";
+  if (value === "reactive" || value === "pattern" || value === "hybrid") {
+    return value;
+  }
+
+  if (value === "global") {
+    return "reactive";
+  }
+
+  if (value === "section4bar") {
+    return "hybrid";
+  }
+
+  return "hybrid";
+}
+
+function normalizeSceneType(value: unknown): CandidateSceneType | null {
+  if (value === "heavy_attack") {
+    return "prep_1_attack";
+  }
+
+  if (value === "quick_attack") {
+    return "prep_2_attack";
+  }
+
+  if (
+    value === "prep_1_attack" ||
+    value === "prep_2_attack" ||
+    value === "prep_3_attack" ||
+    value === "combo_pattern_1bar" ||
+    value === "combo_pattern_2bar"
+  ) {
+    return value;
+  }
+
+  return null;
 }
 
 function toNumber(value: unknown) {
@@ -121,6 +158,7 @@ function normalizeCandidateEvent(value: unknown): CandidateEvent | null {
   const gridDivision = toNumber(value.gridDivision);
   const confidence = toNumber(value.confidence);
   const strength = toNumber(value.strength);
+  const sceneType = normalizeSceneType(value.sceneType);
 
   if (
     typeof value.id !== "string" ||
@@ -154,7 +192,88 @@ function normalizeCandidateEvent(value: unknown): CandidateEvent | null {
     confidence,
     strength,
     kind: value.kind as CandidateEvent["kind"],
+    sceneFamily:
+      typeof value.sceneFamily === "string" && (value.sceneFamily === "reactive" || value.sceneFamily === "pattern")
+        ? value.sceneFamily
+        : candidateSceneTypeMeta[sceneType ?? "prep_1_attack"].family,
+    sceneType:
+      sceneType ??
+      (typeof value.sceneFamily === "string" && value.sceneFamily === "pattern" ? "combo_pattern_1bar" : "prep_1_attack"),
+    sceneGroupId: typeof value.sceneGroupId === "string" && value.sceneGroupId.trim() ? value.sceneGroupId : value.id,
+    cueTimesSec: Array.isArray(value.cueTimesSec)
+      ? value.cueTimesSec.filter((item): item is number => typeof item === "number" && Number.isFinite(item))
+      : [],
     reason: value.reason,
+  };
+}
+
+function normalizePatternSegment(value: unknown): PatternSegment | null {
+  if (!isRecord(value) || !Array.isArray(value.cueEvents) || !Array.isArray(value.responseEventIds)) {
+    return null;
+  }
+
+  const cueEvents = value.cueEvents
+    .map((candidate) => normalizeCandidateEvent(candidate))
+    .filter((candidate): candidate is CandidateEvent => candidate !== null);
+
+  if (cueEvents.length !== value.cueEvents.length) {
+    return null;
+  }
+
+  const bars = toNumber(value.bars);
+  const sceneType = normalizeSceneType(value.sceneType);
+  const normalizedPatternSceneType =
+    sceneType === "combo_pattern_1bar" || sceneType === "combo_pattern_2bar"
+      ? sceneType
+      : bars === 1
+        ? "combo_pattern_1bar"
+        : "combo_pattern_2bar";
+  const cueStartBar = toNumber(value.cueStartBar);
+  const cueEndBar = toNumber(value.cueEndBar);
+  const responseStartBar = toNumber(value.responseStartBar);
+  const responseEndBar = toNumber(value.responseEndBar);
+  const cueStartSec = toNumber(value.cueStartSec);
+  const cueEndSec = toNumber(value.cueEndSec);
+  const responseStartSec = toNumber(value.responseStartSec);
+  const responseEndSec = toNumber(value.responseEndSec);
+  const score = toNumber(value.score);
+  const similarity = toNumber(value.similarity);
+  const responseEventIds = value.responseEventIds.filter((item): item is string => typeof item === "string");
+
+  if (
+    typeof value.id !== "string" ||
+    (bars !== 1 && bars !== 2) ||
+    cueStartBar === null ||
+    cueEndBar === null ||
+    responseStartBar === null ||
+    responseEndBar === null ||
+    cueStartSec === null ||
+    cueEndSec === null ||
+    responseStartSec === null ||
+    responseEndSec === null ||
+    score === null ||
+    similarity === null ||
+    responseEventIds.length !== value.responseEventIds.length
+  ) {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    bars,
+    sceneType: normalizedPatternSceneType,
+    cueStartBar,
+    cueEndBar,
+    responseStartBar,
+    responseEndBar,
+    cueStartSec,
+    cueEndSec,
+    responseStartSec,
+    responseEndSec,
+    score,
+    similarity,
+    cueEvents,
+    responseEventIds,
   };
 }
 
@@ -176,6 +295,30 @@ function normalizeCandidateVariant(value: unknown): CandidateVariant | null {
     label: typeof value.label === "string" ? value.label : "후보 방식",
     description: typeof value.description === "string" ? value.description : "",
     candidateEvents,
+    patternSegments: [],
+  };
+}
+
+function normalizeCandidateVariantWithSegments(value: unknown): CandidateVariant | null {
+  const baseVariant = normalizeCandidateVariant(value);
+
+  if (!baseVariant || !isRecord(value)) {
+    return baseVariant;
+  }
+
+  const patternSegments = Array.isArray(value.patternSegments)
+    ? value.patternSegments
+        .map((segment) => normalizePatternSegment(segment))
+        .filter((segment): segment is PatternSegment => segment !== null)
+    : [];
+
+  if (Array.isArray(value.patternSegments) && patternSegments.length !== value.patternSegments.length) {
+    return null;
+  }
+
+  return {
+    ...baseVariant,
+    patternSegments,
   };
 }
 
@@ -194,7 +337,7 @@ function normalizeAnalysisResponse(value: unknown): AnalysisResponse | null {
 
   const candidateVariants = Array.isArray(value.candidateVariants)
     ? value.candidateVariants
-        .map((variant) => normalizeCandidateVariant(variant))
+        .map((variant) => normalizeCandidateVariantWithSegments(variant))
         .filter((variant): variant is CandidateVariant => variant !== null)
     : [];
   const defaultCandidateStrategy = normalizeCandidateStrategy(value.defaultCandidateStrategy);
@@ -204,9 +347,10 @@ function normalizeAnalysisResponse(value: unknown): AnalysisResponse | null {
       : [
           {
             strategy: defaultCandidateStrategy,
-            label: "전곡 기준",
+            label: "반응형 + 패턴형",
             description: "기존 저장본에서 불러온 기본 후보 세트입니다.",
             candidateEvents,
+            patternSegments: [],
           },
         ];
   const defaultVariant =
@@ -515,6 +659,6 @@ export function getProjectSnapshotFilename(analysis: AnalysisResponse) {
 }
 
 export function getResultExportFilename(analysis: AnalysisResponse, strategy: CandidateStrategy) {
-  const suffix = candidateStrategyOrder.indexOf(strategy) >= 0 ? strategy : "global";
+  const suffix = candidateStrategyOrder.indexOf(strategy) >= 0 ? strategy : "hybrid";
   return `${sanitizeFilenamePart(analysis.songName || analysis.songId)}-${suffix}-selected-events.json`;
 }
