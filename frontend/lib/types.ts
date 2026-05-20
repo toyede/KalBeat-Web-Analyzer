@@ -91,6 +91,16 @@ export type SavedProjectSummary = {
   activeCandidateStrategy: CandidateStrategy;
 };
 
+export type ResultExportLineMode = "splitLines" | "mergedLine";
+
+export type ResultExportLine = {
+  id: string;
+  label: string;
+  sceneType: CandidateSceneType | "merged";
+  eventCount: number;
+  events: CandidateEvent[];
+};
+
 export type ResultExport = {
   schemaVersion: number;
   exportedAt: string;
@@ -102,7 +112,12 @@ export type ResultExport = {
   songLengthSec: number;
   candidateStrategy: CandidateStrategy;
   activeTimingRoles: CandidateTimingRole[];
+  lineMode: ResultExportLineMode;
+  selectedLineCount: number;
+  sourceSelectedEventCount: number;
+  overlapRemovedEventCount: number;
   selectedEventCount: number;
   selectedTimingRoleCounts: Record<CandidateTimingRole, number>;
+  selectedLines: ResultExportLine[];
   selectedEvents: CandidateEvent[];
 };

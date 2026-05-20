@@ -1,5 +1,5 @@
 import { candidateStrategyOrder, getCandidateVariant } from "@/lib/candidate-strategy";
-import { candidateSceneTypeMeta } from "@/lib/candidate-scene-meta";
+import { candidateSceneTypeMeta, candidateSceneTypeOrder } from "@/lib/candidate-scene-meta";
 import { timingRoleOrder } from "@/lib/candidate-event-meta";
 import type {
   AnalysisResponse,
@@ -12,6 +12,8 @@ import type {
   PatternSegment,
   ProjectSnapshot,
   ResultExport,
+  ResultExportLine,
+  ResultExportLineMode,
   SavedProjectSummary,
   TimingRoleSelection,
 } from "@/lib/types";
@@ -20,7 +22,8 @@ const PROJECT_DB_NAME = "kalbeat-web-analyzer";
 const PROJECT_STORE_NAME = "projects";
 const PROJECT_DB_VERSION = 1;
 const PROJECT_SNAPSHOT_VERSION = 2;
-const RESULT_EXPORT_VERSION = 1;
+const RESULT_EXPORT_VERSION = 2;
+const MERGED_LINE_TIME_TOLERANCE_SEC = 0.02;
 const VALID_GRID_DIVISIONS = new Set([0, 1, 2, 3, 4, 8]);
 
 type StoredProjectRecord = {
@@ -607,14 +610,130 @@ export async function deleteProjectRecord(projectId: string) {
   }
 }
 
+function getTimingRoleSortIndex(role: CandidateTimingRole) {
+  const index = timingRoleOrder.indexOf(role);
+  return index >= 0 ? index : timingRoleOrder.length;
+}
+
+function getSceneTypeSortIndex(event: CandidateEvent) {
+  const index = candidateSceneTypeOrder.indexOf(event.sceneType);
+  return index >= 0 ? index : candidateSceneTypeOrder.length;
+}
+
+function compareCandidateEvents(left: CandidateEvent, right: CandidateEvent) {
+  return (
+    left.timeSec - right.timeSec ||
+    left.beatIndex - right.beatIndex ||
+    left.barIndex - right.barIndex ||
+    left.beatInBar - right.beatInBar ||
+    left.slotInBeat - right.slotInBeat ||
+    getTimingRoleSortIndex(left.timingRole) - getTimingRoleSortIndex(right.timingRole) ||
+    getSceneTypeSortIndex(left) - getSceneTypeSortIndex(right) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function isBetterOverlappingEvent(candidate: CandidateEvent, current: CandidateEvent) {
+  return (
+    candidate.confidence - current.confidence ||
+    candidate.strength - current.strength ||
+    getTimingRoleSortIndex(current.timingRole) - getTimingRoleSortIndex(candidate.timingRole) ||
+    getSceneTypeSortIndex(current) - getSceneTypeSortIndex(candidate) ||
+    -compareCandidateEvents(candidate, current)
+  ) > 0;
+}
+
+function pickBestOverlappingEvent(events: CandidateEvent[]) {
+  return events.reduce((best, event) => (isBetterOverlappingEvent(event, best) ? event : best), events[0]);
+}
+
+function mergeOverlappingEvents(events: CandidateEvent[]) {
+  const sortedEvents = [...events].sort(compareCandidateEvents);
+  const mergedEvents: CandidateEvent[] = [];
+  let currentCluster: CandidateEvent[] = [];
+  let clusterStartTimeSec = 0;
+
+  function flushCluster() {
+    if (currentCluster.length === 0) {
+      return;
+    }
+
+    mergedEvents.push(pickBestOverlappingEvent(currentCluster));
+    currentCluster = [];
+  }
+
+  for (const event of sortedEvents) {
+    if (currentCluster.length === 0) {
+      currentCluster = [event];
+      clusterStartTimeSec = event.timeSec;
+      continue;
+    }
+
+    if (Math.abs(event.timeSec - clusterStartTimeSec) <= MERGED_LINE_TIME_TOLERANCE_SEC) {
+      currentCluster.push(event);
+      continue;
+    }
+
+    flushCluster();
+    currentCluster = [event];
+    clusterStartTimeSec = event.timeSec;
+  }
+
+  flushCluster();
+  return mergedEvents.sort(compareCandidateEvents);
+}
+
+function buildSplitExportLines(selectedEvents: CandidateEvent[]): ResultExportLine[] {
+  return candidateSceneTypeOrder.flatMap((sceneType) => {
+    const events = selectedEvents.filter((event) => event.sceneType === sceneType).sort(compareCandidateEvents);
+
+    if (events.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        id: sceneType,
+        label: candidateSceneTypeMeta[sceneType].label,
+        sceneType,
+        eventCount: events.length,
+        events,
+      },
+    ];
+  });
+}
+
+function buildMergedExportLines(selectedEvents: CandidateEvent[]): ResultExportLine[] {
+  const events = mergeOverlappingEvents(selectedEvents);
+
+  if (events.length === 0) {
+    return [];
+  }
+
+  return [
+    {
+      id: "merged",
+      label: "Merged line",
+      sceneType: "merged",
+      eventCount: events.length,
+      events,
+    },
+  ];
+}
+
 export function buildResultExport(options: {
   analysis: AnalysisResponse;
   reviewStates: Record<string, CandidateReviewState>;
   activeTimingRoles: TimingRoleSelection;
   candidateStrategy: CandidateStrategy;
+  lineMode?: ResultExportLineMode;
 }): ResultExport {
   const activeVariant = getCandidateVariant(options.analysis, options.candidateStrategy);
-  const selectedEvents = activeVariant.candidateEvents.filter((event) => options.reviewStates[event.id] === "keep");
+  const lineMode = options.lineMode ?? "splitLines";
+  const sourceSelectedEvents = activeVariant.candidateEvents.filter((event) => options.reviewStates[event.id] === "keep");
+  const selectedLines =
+    lineMode === "mergedLine" ? buildMergedExportLines(sourceSelectedEvents) : buildSplitExportLines(sourceSelectedEvents);
+  const selectedEvents = selectedLines.flatMap((line) => line.events).sort(compareCandidateEvents);
   const selectedTimingRoleCounts = timingRoleOrder.reduce<Record<CandidateTimingRole, number>>((counts, role) => {
     counts[role] = selectedEvents.filter((event) => event.timingRole === role).length;
     return counts;
@@ -631,8 +750,13 @@ export function buildResultExport(options: {
     songLengthSec: options.analysis.songLengthSec,
     candidateStrategy: options.candidateStrategy,
     activeTimingRoles: timingRoleOrder.filter((role) => options.activeTimingRoles[role]),
+    lineMode,
+    selectedLineCount: selectedLines.length,
+    sourceSelectedEventCount: sourceSelectedEvents.length,
+    overlapRemovedEventCount: Math.max(sourceSelectedEvents.length - selectedEvents.length, 0),
     selectedEventCount: selectedEvents.length,
     selectedTimingRoleCounts,
+    selectedLines,
     selectedEvents,
   };
 }
@@ -658,7 +782,12 @@ export function getProjectSnapshotFilename(analysis: AnalysisResponse) {
   return `${sanitizeFilenamePart(analysis.songName || analysis.songId)}-project.json`;
 }
 
-export function getResultExportFilename(analysis: AnalysisResponse, strategy: CandidateStrategy) {
+export function getResultExportFilename(
+  analysis: AnalysisResponse,
+  strategy: CandidateStrategy,
+  lineMode: ResultExportLineMode = "splitLines",
+) {
   const suffix = candidateStrategyOrder.indexOf(strategy) >= 0 ? strategy : "hybrid";
-  return `${sanitizeFilenamePart(analysis.songName || analysis.songId)}-${suffix}-selected-events.json`;
+  const lineSuffix = lineMode === "mergedLine" ? "merged-line" : "split-lines";
+  return `${sanitizeFilenamePart(analysis.songName || analysis.songId)}-${suffix}-${lineSuffix}-selected-events.json`;
 }

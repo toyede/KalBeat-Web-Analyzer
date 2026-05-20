@@ -29,6 +29,7 @@ import type {
   CandidateReviewState,
   CandidateStrategy,
   CandidateTimingRole,
+  ResultExportLineMode,
   SavedProjectSummary,
   TimingRoleSelection,
 } from "@/lib/types";
@@ -143,6 +144,10 @@ function formatSavedAt(savedAt: string) {
   });
 }
 
+function getResultExportLineModeLabel(lineMode: ResultExportLineMode) {
+  return lineMode === "mergedLine" ? "한 라인" : "분리 라인";
+}
+
 export function UploadWorkbench() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResponse>(sampleAnalysis);
@@ -157,6 +162,7 @@ export function UploadWorkbench() {
   const [savedProjects, setSavedProjects] = useState<SavedProjectSummary[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState(defaultMessage);
+  const [resultExportLineMode, setResultExportLineMode] = useState<ResultExportLineMode>("splitLines");
   const [isRendering, startTransition] = useTransition();
 
   const deferredAnalysis = useDeferredValue(analysis);
@@ -464,6 +470,7 @@ export function UploadWorkbench() {
       reviewStates,
       activeTimingRoles,
       candidateStrategy: activeCandidateStrategy,
+      lineMode: resultExportLineMode,
     });
 
     if (resultExport.selectedEventCount === 0) {
@@ -472,10 +479,14 @@ export function UploadWorkbench() {
       return;
     }
 
-    downloadJsonFile(getResultExportFilename(analysis, activeCandidateStrategy), resultExport);
+    downloadJsonFile(getResultExportFilename(analysis, activeCandidateStrategy, resultExportLineMode), resultExport);
     setPhase("success");
     setMessage(
-      `${activeVariant.label} 기준에서 채용한 이벤트 ${resultExport.selectedEventCount}개를 JSON으로 내보냈습니다.`,
+      `${activeVariant.label} 기준에서 ${getResultExportLineModeLabel(resultExportLineMode)} 내보내기로 채용한 이벤트 ${resultExport.selectedEventCount}개를 JSON으로 내보냈습니다.${
+        resultExport.overlapRemovedEventCount > 0
+          ? ` 겹친 후보 ${resultExport.overlapRemovedEventCount}개는 한 개로 정리했습니다.`
+          : ""
+      }`,
     );
   }
 
@@ -551,6 +562,22 @@ export function UploadWorkbench() {
       </section>
 
       <div className="project-actions">
+        <div className="export-mode-control">
+          <span>내보내기 라인</span>
+          <div className="export-mode-toggle" role="group" aria-label="결과 내보내기 라인 방식">
+            {(["splitLines", "mergedLine"] as const).map((lineMode) => (
+              <button
+                key={lineMode}
+                aria-pressed={resultExportLineMode === lineMode}
+                className={`export-mode-option ${resultExportLineMode === lineMode ? "active" : ""}`}
+                onClick={() => setResultExportLineMode(lineMode)}
+                type="button"
+              >
+                {getResultExportLineModeLabel(lineMode)}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="action-row">
           <button className="secondary-button" onClick={() => void handleSaveProject()} type="button">
             현재 상태 저장

@@ -293,6 +293,44 @@ button {
   margin-top: 16px;
 }
 
+.export-mode-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.export-mode-control > span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.export-mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+}
+
+.export-mode-option {
+  min-width: 86px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.export-mode-option.active {
+  color: #ffffff;
+  background: #111111;
+}
+
 .comparison-panel {
   margin-top: 18px;
   padding: 22px;
