@@ -50,6 +50,13 @@ class PatternSegment(BaseModel):
     responseEventIds: list[str] = Field(default_factory=list)
 
 
+class OffsetCandidate(BaseModel):
+    source: Literal["auto", "first_onset", "strong_onset", "grid_phase", "beat_tracker"]
+    label: str
+    offsetSec: float = Field(..., ge=0)
+    reason: str = ""
+
+
 class CandidateVariant(BaseModel):
     strategy: CandidateStrategy
     label: str
@@ -68,5 +75,6 @@ class AnalysisResponse(BaseModel):
     offsetSec: float = Field(..., ge=0)
     songLengthSec: float = Field(..., ge=0)
     defaultCandidateStrategy: CandidateStrategy = "hybrid"
+    offsetCandidates: list[OffsetCandidate] = Field(default_factory=list)
     candidateEvents: list[CandidateEvent] = Field(default_factory=list)
     candidateVariants: list[CandidateVariant] = Field(default_factory=list)

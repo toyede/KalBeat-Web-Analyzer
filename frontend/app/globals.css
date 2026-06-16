@@ -600,6 +600,27 @@ button {
   text-align: center;
 }
 
+.offset-card {
+  flex: 1 1 320px;
+}
+
+.offset-card .scene-type-chip {
+  padding: 6px 12px;
+  font-size: 0.82rem;
+}
+
+.offset-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.offset-candidate-caption {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted, #6b7280);
+}
+
 .scene-type-picker {
   display: flex;
   flex-direction: column;

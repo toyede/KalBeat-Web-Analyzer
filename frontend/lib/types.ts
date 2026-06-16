@@ -48,6 +48,15 @@ export type PatternSegment = {
   responseEventIds: string[];
 };
 
+export type OffsetCandidateSource = "auto" | "first_onset" | "strong_onset" | "grid_phase" | "beat_tracker";
+
+export type OffsetCandidate = {
+  source: OffsetCandidateSource;
+  label: string;
+  offsetSec: number;
+  reason: string;
+};
+
 export type AnalysisResponse = {
   schemaVersion: number;
   songId: string;
@@ -58,6 +67,7 @@ export type AnalysisResponse = {
   offsetSec: number;
   songLengthSec: number;
   defaultCandidateStrategy: CandidateStrategy;
+  offsetCandidates?: OffsetCandidate[];
   candidateEvents: CandidateEvent[];
   candidateVariants: CandidateVariant[];
 };

@@ -18,6 +18,7 @@ from app.schemas import (
     CandidateSceneType,
     CandidateStrategy,
     CandidateVariant,
+    OffsetCandidate,
     PatternSegment,
 )
 
@@ -290,6 +291,108 @@ def _octave_correct_bpm(base_bpm: float, onset_envelope: np.ndarray, sample_rate
     in_band = [item for item in scored if PREFERRED_BPM_LOW <= item[0] <= PREFERRED_BPM_HIGH]
     pool = in_band or scored
     return max(pool, key=lambda item: item[1])[0]
+
+
+def _best_grid_phase_offset(onset_envelope: np.ndarray, sample_rate: int, bpm: float) -> float:
+    """Offset within the first beat whose beat grid best lines up with onset energy."""
+    if bpm <= 0 or onset_envelope.size < 4:
+        return 0.0
+
+    frame_rate = sample_rate / HOP_LENGTH
+    period_frames = (60.0 / bpm) * frame_rate
+
+    if period_frames < 2:
+        return 0.0
+
+    total_frames = onset_envelope.size
+    grid_count = max(1, int((total_frames - 1) / period_frames))
+    steps = max(8, int(round(period_frames)) * 2)
+    best_phase, best_score = 0.0, -1.0
+
+    for step in range(steps):
+        phase = (step / steps) * period_frames
+        indices = np.round(phase + period_frames * np.arange(grid_count)).astype(int)
+        indices = indices[indices < total_frames]
+
+        if indices.size == 0:
+            continue
+
+        score = float(onset_envelope[indices].sum()) / indices.size
+
+        if score > best_score:
+            best_score, best_phase = score, phase
+
+    return best_phase / frame_rate
+
+
+def _build_offset_candidates(
+    auto_offset_sec: float,
+    beat_tracker_offset_sec: float | None,
+    first_onset_sec: float | None,
+    onset_frames: np.ndarray,
+    onset_envelope: np.ndarray,
+    sample_rate: int,
+    global_bpm: float,
+    song_length_sec: float,
+) -> list[OffsetCandidate]:
+    """Offer a few musically meaningful starting points so the user can pick/verify."""
+
+    def clamp_offset(value: float) -> float:
+        return float(min(max(value, 0.0), max(song_length_sec, 0.0)))
+
+    proposals: list[tuple[str, str, float, str]] = [
+        ("auto", "자동 추정", clamp_offset(auto_offset_sec), "분석기가 고른 기본 시작점입니다."),
+    ]
+
+    if first_onset_sec is not None:
+        proposals.append(
+            ("first_onset", "첫 소리", clamp_offset(first_onset_sec), "곡에서 가장 먼저 감지된 소리에 맞춥니다."),
+        )
+
+    if onset_frames.size > 0 and onset_envelope.size > 0:
+        beat_duration = 60.0 / max(global_bpm, 1e-6)
+        early_limit_sec = max(4.0, beat_duration * 8)
+        early_onsets = [
+            (int(frame), float(onset_envelope[int(frame)]))
+            for frame in onset_frames
+            if int(frame) < onset_envelope.size
+            and float(librosa.frames_to_time(int(frame), sr=sample_rate, hop_length=HOP_LENGTH)) <= early_limit_sec
+        ]
+
+        if early_onsets:
+            strong_frame = max(early_onsets, key=lambda item: item[1])[0]
+            strong_time = float(librosa.frames_to_time(strong_frame, sr=sample_rate, hop_length=HOP_LENGTH))
+            proposals.append(
+                ("strong_onset", "초반 강타", clamp_offset(strong_time), "곡 초반에서 가장 강하게 친 타격에 맞춥니다."),
+            )
+
+    proposals.append(
+        (
+            "grid_phase",
+            "박자 그리드",
+            clamp_offset(_best_grid_phase_offset(onset_envelope, sample_rate, global_bpm)),
+            "곡 전체 박자 에너지가 가장 잘 맞는 위상입니다.",
+        )
+    )
+
+    if beat_tracker_offset_sec is not None:
+        proposals.append(
+            ("beat_tracker", "박자 추적기", clamp_offset(beat_tracker_offset_sec), "자동 박자 추적기가 찍은 첫 박입니다."),
+        )
+
+    candidates: list[OffsetCandidate] = []
+    seen_offsets: list[float] = []
+
+    for source, label, offset_value, reason in proposals:
+        if any(abs(offset_value - kept) <= 0.012 for kept in seen_offsets):
+            continue
+
+        seen_offsets.append(offset_value)
+        candidates.append(
+            OffsetCandidate(source=source, label=label, offsetSec=_round_float(offset_value), reason=reason)
+        )
+
+    return candidates
 
 
 def _clamp01(value: float) -> float:
@@ -2204,6 +2307,17 @@ def analyze_audio_file(file_name: str, saved_path: Path) -> AnalysisResponse:
     else:
         raise AnalysisError("Unable to estimate BPM or offset from this audio file.")
 
+    offset_candidates = _build_offset_candidates(
+        auto_offset_sec=offset_sec,
+        beat_tracker_offset_sec=float(beat_times[0]) if beat_times.size > 0 else None,
+        first_onset_sec=first_onset_sec,
+        onset_frames=onset_frames,
+        onset_envelope=onset_envelope,
+        sample_rate=sample_rate,
+        global_bpm=global_bpm,
+        song_length_sec=duration_sec,
+    )
+
     reactive_source_events = _build_candidate_events(
         profile="global",
         song_length_sec=duration_sec,
@@ -2276,6 +2390,7 @@ def analyze_audio_file(file_name: str, saved_path: Path) -> AnalysisResponse:
         offsetSec=_round_float(offset_sec),
         songLengthSec=_round_float(duration_sec),
         defaultCandidateStrategy="hybrid",
+        offsetCandidates=offset_candidates,
         candidateEvents=default_variant.candidateEvents,
         candidateVariants=candidate_variants,
     )

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 
 import { candidateSceneTypeMeta, candidateSceneTypeOrder } from "@/lib/candidate-scene-meta";
 import { timingRoleMeta } from "@/lib/candidate-event-meta";
-import type { AnalysisResponse, CandidateReviewState, CandidateVariant, PatternSegment } from "@/lib/types";
+import type { AnalysisResponse, CandidateReviewState, CandidateVariant, OffsetCandidate, PatternSegment } from "@/lib/types";
 
 const MIN_TIMELINE_ZOOM = 1;
 const MAX_TIMELINE_ZOOM = 10;
@@ -270,6 +270,7 @@ export function AnalysisTimeline({
   const [showBeatGrid, setShowBeatGrid] = useState(true);
   const [selectedSceneType, setSelectedSceneType] = useState<string | null>(null);
   const [manualBpmText, setManualBpmText] = useState(() => String(analysis.globalBpm));
+  const [manualOffsetText, setManualOffsetText] = useState(() => String(analysis.offsetSec));
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const musicBufferRef = useRef<{ key: string; buffer: AudioBuffer } | null>(null);
@@ -282,9 +283,14 @@ export function AnalysisTimeline({
   const parsedManualBpm = Number.parseFloat(manualBpmText);
   const effectiveBpm = Number.isFinite(parsedManualBpm) && parsedManualBpm > 0 ? parsedManualBpm : analysis.globalBpm;
   const isManualBpm = Math.abs(effectiveBpm - analysis.globalBpm) > 1e-6;
+  const offsetCandidates: OffsetCandidate[] = analysis.offsetCandidates ?? [];
+  const parsedManualOffset = Number.parseFloat(manualOffsetText);
+  const effectiveOffset =
+    Number.isFinite(parsedManualOffset) && parsedManualOffset >= 0 ? parsedManualOffset : analysis.offsetSec;
+  const isManualOffset = Math.abs(effectiveOffset - analysis.offsetSec) > 1e-4;
   const metronomeBeats = useMemo(
-    () => buildMetronomeBeats(effectiveBpm, analysis.offsetSec, analysis.songLengthSec),
-    [effectiveBpm, analysis.offsetSec, analysis.songLengthSec],
+    () => buildMetronomeBeats(effectiveBpm, effectiveOffset, analysis.songLengthSec),
+    [effectiveBpm, effectiveOffset, analysis.songLengthSec],
   );
   const selectedEvent = variant.candidateEvents.find((event) => event.id === selectedEventId) ?? variant.candidateEvents[0] ?? null;
   const selectedSceneMeta = selectedEvent ? candidateSceneTypeMeta[selectedEvent.sceneType] : null;
@@ -309,6 +315,10 @@ export function AnalysisTimeline({
   useEffect(() => {
     setManualBpmText(String(analysis.globalBpm));
   }, [analysis.globalBpm]);
+
+  useEffect(() => {
+    setManualOffsetText(String(analysis.offsetSec));
+  }, [analysis.offsetSec]);
 
   const visibleFraction = 1 / zoomLevel;
   const maxStartFraction = Math.max(0, 1 - visibleFraction);
@@ -482,6 +492,26 @@ export function AnalysisTimeline({
     setManualBpmText(String(analysis.globalBpm));
   }
 
+  function handleManualOffsetChange(event: ChangeEvent<HTMLInputElement>) {
+    setManualOffsetText(event.target.value);
+  }
+
+  function adjustManualOffset(delta: number) {
+    setManualOffsetText((current) => {
+      const value = Number.parseFloat(current);
+      const base = Number.isFinite(value) && value >= 0 ? value : analysis.offsetSec;
+      return String(clamp(Math.round((base + delta) * 1000) / 1000, 0, Math.max(analysis.songLengthSec, 0)));
+    });
+  }
+
+  function resetManualOffset() {
+    setManualOffsetText(String(analysis.offsetSec));
+  }
+
+  function selectOffsetCandidate(offsetSec: number) {
+    setManualOffsetText(String(offsetSec));
+  }
+
   function focusSelectedEvent() {
     if (!selectedEvent || analysis.songLengthSec <= 0) {
       return;
@@ -620,7 +650,7 @@ export function AnalysisTimeline({
       setIsPlaying(true);
       setPreviewStatus(
         `메트로놈 재생: ${effectiveBpm} BPM${isManualBpm ? ` (수동 · 분석값 ${analysis.globalBpm})` : ""} · ` +
-          `offset ${analysis.offsetSec.toFixed(3)}s · 박 ${scheduledBeats}개. ` +
+          `offset ${effectiveOffset.toFixed(3)}s${isManualOffset ? " (수동)" : ""} · 박 ${scheduledBeats}개. ` +
           "마디 첫 박(강박)은 높은 클릭으로 표시됩니다. 원본 박자와 어긋나면 BPM 또는 offset이 틀린 것입니다.",
       );
 
@@ -739,6 +769,51 @@ export function AnalysisTimeline({
           </p>
         </div>
 
+        <div className="toolbar-card offset-card">
+          <span className="metric-label">메트로놈 시작점(offset)</span>
+          <div className="toolbar-row">
+            <button className="mini-button" onClick={() => adjustManualOffset(-0.005)} type="button">
+              -
+            </button>
+            <input
+              className="bpm-input"
+              min="0"
+              onChange={handleManualOffsetChange}
+              step="0.001"
+              type="number"
+              value={manualOffsetText}
+            />
+            <button className="mini-button" onClick={() => adjustManualOffset(0.005)} type="button">
+              +
+            </button>
+            <button className="mini-button" disabled={!isManualOffset} onClick={resetManualOffset} type="button">
+              리셋
+            </button>
+          </div>
+          {offsetCandidates.length > 0 ? (
+            <div className="offset-candidate-list">
+              <span className="offset-candidate-caption">후보 (클릭하면 적용)</span>
+              <div className="scene-type-chips">
+                {offsetCandidates.map((candidate) => (
+                  <button
+                    key={candidate.source}
+                    type="button"
+                    className={`scene-type-chip ${Math.abs(effectiveOffset - candidate.offsetSec) < 1e-3 ? "active" : ""}`}
+                    onClick={() => selectOffsetCandidate(candidate.offsetSec)}
+                    title={candidate.reason}
+                  >
+                    {candidate.label}
+                    <span className="scene-type-count">{candidate.offsetSec.toFixed(3)}s</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <p className="toolbar-note">
+            분석값 {analysis.offsetSec.toFixed(3)}s{isManualOffset ? ` · 현재 ${effectiveOffset.toFixed(3)}s (수동)` : " 사용 중"}
+          </p>
+        </div>
+
         <div className="toolbar-card">
           <span className="metric-label">박자 격자</span>
           <div className="toolbar-row">
@@ -751,7 +826,7 @@ export function AnalysisTimeline({
               <span>{effectiveBpm} BPM 격자 표시</span>
             </label>
           </div>
-          <p className="toolbar-note">박 {metronomeBeats.length}개 · offset {analysis.offsetSec.toFixed(3)}s</p>
+          <p className="toolbar-note">박 {metronomeBeats.length}개 · offset {effectiveOffset.toFixed(3)}s</p>
         </div>
       </div>
 
@@ -784,7 +859,7 @@ export function AnalysisTimeline({
                   <div
                     aria-hidden="true"
                     className="timeline-offset-marker"
-                    style={{ left: `${Math.min((analysis.offsetSec / analysis.songLengthSec) * 100, 100)}%` }}
+                    style={{ left: `${Math.min((effectiveOffset / analysis.songLengthSec) * 100, 100)}%` }}
                   />
                 ) : null}
               </div>
@@ -860,7 +935,7 @@ export function AnalysisTimeline({
 
         <div className="timeline-scale">
           <span>0:00.00</span>
-          <span>offset {analysis.offsetSec.toFixed(3)}s</span>
+          <span>offset {effectiveOffset.toFixed(3)}s{isManualOffset ? " (수동)" : ""}</span>
           <span>{formatSeconds(analysis.songLengthSec)}</span>
         </div>
       </div>
