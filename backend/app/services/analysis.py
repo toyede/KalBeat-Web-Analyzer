@@ -37,6 +37,15 @@ FOUR_BAR_BEATS = 16
 PATTERN_UNITS_PER_BEAT = 24
 SIXTEENTH_STEPS_PER_BEAT = 4
 SIXTEENTH_STEPS_PER_BAR = BEATS_PER_BAR * SIXTEENTH_STEPS_PER_BEAT
+# BPM octave/metrical correction: metrical-level variants of the base estimate to
+# re-score (half/double plus the 2:3 and 3:4 cross-rhythm mis-locks), the perceptual
+# band used to break half/double ties (half-time leaning), and comb depth.
+OCTAVE_CORRECTION_RATIOS = (0.5, 2.0 / 3.0, 0.75, 1.0, 4.0 / 3.0, 1.5, 2.0)
+PREFERRED_BPM_LOW = 70.0
+PREFERRED_BPM_HIGH = 140.0
+OCTAVE_BPM_FLOOR = 40.0
+OCTAVE_BPM_CEIL = 300.0
+OCTAVE_COMB_HARMONICS = 6
 TIMING_ROLE_ORDER = ("pulse", "offbeat", "subdivision", "thirtySecond", "triplet", "freeAccent")
 TIMING_ROLE_SORT_INDEX = {role: index for index, role in enumerate(TIMING_ROLE_ORDER)}
 STYLE_META: dict[CandidateStrategy, tuple[str, str]] = {
@@ -210,6 +219,77 @@ def _snap_bpm(value: float) -> float:
         return float(nearest_integer)
 
     return float(value)
+
+
+def _lag_autocorrelation(centered_envelope: np.ndarray, lag: int) -> float:
+    if lag < 1 or lag >= centered_envelope.size:
+        return 0.0
+
+    left = centered_envelope[:-lag]
+    right = centered_envelope[lag:]
+    norm = float(np.linalg.norm(left) * np.linalg.norm(right))
+
+    if norm <= 0:
+        return 0.0
+
+    return float(np.dot(left, right) / norm)
+
+
+def _comb_score(centered_envelope: np.ndarray, bpm: float, frame_rate: float, harmonics: int = OCTAVE_COMB_HARMONICS) -> float:
+    if bpm <= 0:
+        return 0.0
+
+    period_frames = (60.0 / bpm) * frame_rate
+    return sum(
+        _lag_autocorrelation(centered_envelope, int(round(period_frames * harmonic)))
+        for harmonic in range(1, harmonics + 1)
+    )
+
+
+def _octave_correct_bpm(base_bpm: float, onset_envelope: np.ndarray, sample_rate: int) -> float:
+    """Resolve metrical-octave errors from beat_track.
+
+    beat_track + the start_bpm=120 prior can lock onto a wrong metrical level
+    (e.g. reporting 123 for a song whose real beat is ~92, a 4:3 mis-lock, or
+    half/double of the true tempo). We re-score octave/metrical variants of the
+    base estimate with a harmonic comb autocorrelation of the onset envelope and
+    prefer a candidate inside the perceptual band, which keeps the chosen tempo
+    on the level human BPM detectors agree on.
+    """
+    if base_bpm <= 0 or onset_envelope.size < 8:
+        return base_bpm
+
+    frame_rate = sample_rate / HOP_LENGTH
+    centered_envelope = np.asarray(onset_envelope, dtype=float)
+    centered_envelope = centered_envelope - centered_envelope.mean()
+
+    scored: list[tuple[float, float]] = []
+
+    for ratio in OCTAVE_CORRECTION_RATIOS:
+        candidate_bpm = base_bpm * ratio
+
+        if candidate_bpm < OCTAVE_BPM_FLOOR or candidate_bpm > OCTAVE_BPM_CEIL:
+            continue
+
+        # Refine within +/-2 frames to counter HOP_LENGTH quantization of the lag.
+        center_lag = int(round((60.0 / candidate_bpm) * frame_rate))
+        best_bpm, best_score = candidate_bpm, -math.inf
+
+        for lag in range(max(1, center_lag - 2), center_lag + 3):
+            refined_bpm = 60.0 * frame_rate / lag
+            score = _comb_score(centered_envelope, refined_bpm, frame_rate)
+
+            if score > best_score:
+                best_score, best_bpm = score, refined_bpm
+
+        scored.append((best_bpm, best_score))
+
+    if not scored:
+        return base_bpm
+
+    in_band = [item for item in scored if PREFERRED_BPM_LOW <= item[0] <= PREFERRED_BPM_HIGH]
+    pool = in_band or scored
+    return max(pool, key=lambda item: item[1])[0]
 
 
 def _clamp01(value: float) -> float:
@@ -2105,6 +2185,7 @@ def analyze_audio_file(file_name: str, saved_path: Path) -> AnalysisResponse:
 
     if beat_times.size > 1:
         global_bpm = _snap_bpm(60.0 / float(np.median(np.diff(beat_times))))
+        global_bpm = _snap_bpm(_octave_correct_bpm(global_bpm, onset_envelope, sample_rate))
         offset_sec = float(beat_times[0])
 
         if first_onset_sec is not None:

@@ -41,6 +41,12 @@ type PreviewEvent = {
   tone: "cue" | "input";
 };
 
+type MetronomeBeat = {
+  timeSec: number;
+  beatNumber: number;
+  isDownbeat: boolean;
+};
+
 type WindowWithWebkitAudio = Window &
   typeof globalThis & {
     webkitAudioContext?: typeof AudioContext;
@@ -178,6 +184,36 @@ function buildTimelineLanes(variant: CandidateVariant): TimelineLane[] {
   });
 }
 
+const BEATS_PER_BAR = 4;
+const MAX_METRONOME_BEATS = 6000;
+
+function buildMetronomeBeats(bpm: number, offsetSec: number, songLengthSec: number): MetronomeBeat[] {
+  if (bpm <= 0 || songLengthSec <= 0) {
+    return [];
+  }
+
+  const beatDuration = 60 / bpm;
+  const beats: MetronomeBeat[] = [];
+
+  for (let beatIndex = 0; beats.length < MAX_METRONOME_BEATS; beatIndex += 1) {
+    const timeSec = offsetSec + beatIndex * beatDuration;
+
+    if (timeSec > songLengthSec) {
+      break;
+    }
+
+    if (timeSec >= 0) {
+      beats.push({
+        timeSec,
+        beatNumber: (beatIndex % BEATS_PER_BAR) + 1,
+        isDownbeat: beatIndex % BEATS_PER_BAR === 0,
+      });
+    }
+  }
+
+  return beats;
+}
+
 function buildPreviewEvents(events: CandidateVariant["candidateEvents"], tone: "cue" | "input"): PreviewEvent[] {
   return events.map((event) => ({
     id: event.id,
@@ -231,6 +267,9 @@ export function AnalysisTimeline({
   const [effectVolume, setEffectVolume] = useState(100);
   const [cuePitch, setCuePitch] = useState(82);
   const [inputPitch, setInputPitch] = useState(118);
+  const [showBeatGrid, setShowBeatGrid] = useState(true);
+  const [selectedSceneType, setSelectedSceneType] = useState<string | null>(null);
+  const [manualBpmText, setManualBpmText] = useState(() => String(analysis.globalBpm));
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const musicBufferRef = useRef<{ key: string; buffer: AudioBuffer } | null>(null);
@@ -240,17 +279,36 @@ export function AnalysisTimeline({
 
   const timelineLanes = useMemo(() => buildTimelineLanes(variant), [variant]);
   const previewEvents = useMemo(() => buildPreviewEventsForLanes(timelineLanes), [timelineLanes]);
+  const parsedManualBpm = Number.parseFloat(manualBpmText);
+  const effectiveBpm = Number.isFinite(parsedManualBpm) && parsedManualBpm > 0 ? parsedManualBpm : analysis.globalBpm;
+  const isManualBpm = Math.abs(effectiveBpm - analysis.globalBpm) > 1e-6;
+  const metronomeBeats = useMemo(
+    () => buildMetronomeBeats(effectiveBpm, analysis.offsetSec, analysis.songLengthSec),
+    [effectiveBpm, analysis.offsetSec, analysis.songLengthSec],
+  );
   const selectedEvent = variant.candidateEvents.find((event) => event.id === selectedEventId) ?? variant.candidateEvents[0] ?? null;
-  const selectedLane =
-    timelineLanes.find((lane) => lane.responseEvents.some((event) => event.id === selectedEvent?.id)) ??
-    timelineLanes.find((lane) => lane.responseEvents.length > 0) ??
-    null;
   const selectedSceneMeta = selectedEvent ? candidateSceneTypeMeta[selectedEvent.sceneType] : null;
   const selectedTimingMeta = selectedEvent ? timingRoleMeta[selectedEvent.timingRole] : null;
-  const lanePreviewEvents = useMemo(
-    () => (selectedLane ? buildPreviewEventsForLanes([selectedLane]) : []),
-    [selectedLane],
+  const selectedSceneTypeLane = timelineLanes.find((lane) => lane.sceneType === selectedSceneType) ?? null;
+  const sceneTypePreviewEvents = useMemo(
+    () => (selectedSceneTypeLane ? buildPreviewEventsForLanes([selectedSceneTypeLane]) : []),
+    [selectedSceneTypeLane],
   );
+
+  useEffect(() => {
+    if (timelineLanes.length === 0) {
+      setSelectedSceneType(null);
+      return;
+    }
+
+    setSelectedSceneType((current) =>
+      current && timelineLanes.some((lane) => lane.sceneType === current) ? current : timelineLanes[0].sceneType,
+    );
+  }, [timelineLanes]);
+
+  useEffect(() => {
+    setManualBpmText(String(analysis.globalBpm));
+  }, [analysis.globalBpm]);
 
   const visibleFraction = 1 / zoomLevel;
   const maxStartFraction = Math.max(0, 1 - visibleFraction);
@@ -408,6 +466,22 @@ export function AnalysisTimeline({
     setInputPitch(clamp(Number.parseFloat(event.target.value), 60, 160));
   }
 
+  function handleManualBpmChange(event: ChangeEvent<HTMLInputElement>) {
+    setManualBpmText(event.target.value);
+  }
+
+  function adjustManualBpm(delta: number) {
+    setManualBpmText((current) => {
+      const value = Number.parseFloat(current);
+      const base = Number.isFinite(value) && value > 0 ? value : analysis.globalBpm;
+      return String(clamp(Math.round((base + delta) * 100) / 100, 20, 400));
+    });
+  }
+
+  function resetManualBpm() {
+    setManualBpmText(String(analysis.globalBpm));
+  }
+
   function focusSelectedEvent() {
     if (!selectedEvent || analysis.songLengthSec <= 0) {
       return;
@@ -419,19 +493,18 @@ export function AnalysisTimeline({
     setPanPercent(nextPan);
   }
 
-  async function playPreview(mode: "all" | "group" | "focus") {
+  async function playPreview(mode: "all" | "sceneType") {
     if (!audioFile) {
       setPreviewStatus("오디오 파일을 먼저 선택하고 분석해 주세요.");
       return;
     }
 
-    if (variant.candidateEvents.length === 0) {
-      setPreviewStatus("현재 보기에는 재생할 후보가 없습니다.");
-      return;
-    }
+    const previewSource = mode === "sceneType" ? sceneTypePreviewEvents : previewEvents;
 
-    if (mode === "focus" && !selectedEvent) {
-      setPreviewStatus("먼저 미리들을 이벤트를 하나 선택해 주세요.");
+    if (previewSource.length === 0) {
+      setPreviewStatus(
+        mode === "sceneType" ? "선택한 씬 타입에 재생할 후보가 없습니다." : "현재 보기에는 재생할 후보가 없습니다.",
+      );
       return;
     }
 
@@ -444,33 +517,8 @@ export function AnalysisTimeline({
 
       const musicBuffer = await ensureAudioBuffer(audioFile, musicBufferRef);
       const fxBuffer = effectFile ? await ensureAudioBuffer(effectFile, effectBufferRef) : null;
-      const previewSource =
-        mode === "group"
-          ? lanePreviewEvents
-          : mode === "focus" && selectedEvent
-            ? [
-                ...buildCuePreviewEvents(
-                  selectedEvent.cueTimesSec.map((cueTimeSec, cueIndex) => ({
-                    id: `${selectedEvent.sceneGroupId || selectedEvent.id}-focus-cue-${cueIndex + 1}`,
-                    timeSec: cueTimeSec,
-                    kind: "light" as const,
-                  })),
-                ),
-                ...buildPreviewEvents(
-                  variant.candidateEvents.filter((event) => event.sceneGroupId === selectedEvent.sceneGroupId),
-                  "input",
-                ),
-              ]
-            : previewEvents;
-      const previewStart =
-        mode === "focus" && selectedEvent
-          ? Math.max(selectedEvent.timeSec - 1.2, 0)
-          : Math.max(Math.min(...previewSource.map((event) => event.timeSec), 0), 0);
-      const previewDuration =
-        mode === "focus" && selectedEvent
-          ? Math.min(4, Math.max(1.8, musicBuffer.duration - previewStart))
-          : musicBuffer.duration;
-      const previewEnd = Math.min(musicBuffer.duration, previewStart + previewDuration);
+      const previewStart = Math.max(Math.min(...previewSource.map((event) => event.timeSec), 0), 0);
+      const previewEnd = musicBuffer.duration;
       const previewEventsInRange = previewSource.filter((event) => event.timeSec >= previewStart && event.timeSec <= previewEnd);
       const startAt = context.currentTime + 0.05;
       const musicSource = context.createBufferSource();
@@ -510,7 +558,7 @@ export function AnalysisTimeline({
       setIsPlaying(true);
       setPreviewStatus(
         `${effectFile ? `${effectFile.name} 효과음` : "합성 클릭"}으로 ${
-          mode === "focus" ? "선택 이벤트" : mode === "group" ? "현재 씬 타입" : "현재 보기 전체"
+          mode === "sceneType" && selectedSceneTypeLane ? selectedSceneTypeLane.label : "현재 보기 전체"
         }를 재생합니다. 제시 피치 ${cuePitch}%, 입력 피치 ${inputPitch}%`,
       );
 
@@ -519,6 +567,68 @@ export function AnalysisTimeline({
       }, Math.ceil((previewEnd - previewStart) * 1000) + 180);
     } catch (error) {
       stopPlayback(error instanceof Error ? error.message : "오디오 미리듣기를 시작하지 못했습니다.");
+    }
+  }
+
+  async function playMetronome() {
+    if (!audioFile) {
+      setPreviewStatus("오디오 파일을 먼저 선택하고 분석해 주세요.");
+      return;
+    }
+
+    if (metronomeBeats.length === 0) {
+      setPreviewStatus("BPM과 길이 정보가 없어 메트로놈 박을 만들 수 없습니다.");
+      return;
+    }
+
+    stopPlayback();
+
+    try {
+      const context = audioContextRef.current ?? createAudioContext();
+      audioContextRef.current = context;
+      await context.resume();
+
+      const musicBuffer = await ensureAudioBuffer(audioFile, musicBufferRef);
+      const previewStart = 0;
+      const previewEnd = musicBuffer.duration;
+      const startAt = context.currentTime + 0.05;
+      const musicSource = context.createBufferSource();
+      const musicGain = context.createGain();
+
+      musicSource.buffer = musicBuffer;
+      musicGain.gain.value = musicVolume / 100;
+      musicSource.connect(musicGain);
+      musicGain.connect(context.destination);
+      musicSource.start(startAt, previewStart, previewEnd - previewStart);
+      activeSourcesRef.current.push(musicSource);
+
+      let scheduledBeats = 0;
+
+      for (const beat of metronomeBeats) {
+        if (beat.timeSec < previewStart || beat.timeSec > previewEnd) {
+          continue;
+        }
+
+        const when = startAt + (beat.timeSec - previewStart);
+        // Downbeat (bar start) reads higher and louder so offset/마디 정렬을 귀로 확인할 수 있다.
+        const pitchRate = beat.isDownbeat ? 1.5 : 0.95;
+        const gainScale = ((beat.isDownbeat ? 1 : 0.6) * effectVolume) / 100;
+        scheduleSynthClick(context, when, gainScale, pitchRate);
+        scheduledBeats += 1;
+      }
+
+      setIsPlaying(true);
+      setPreviewStatus(
+        `메트로놈 재생: ${effectiveBpm} BPM${isManualBpm ? ` (수동 · 분석값 ${analysis.globalBpm})` : ""} · ` +
+          `offset ${analysis.offsetSec.toFixed(3)}s · 박 ${scheduledBeats}개. ` +
+          "마디 첫 박(강박)은 높은 클릭으로 표시됩니다. 원본 박자와 어긋나면 BPM 또는 offset이 틀린 것입니다.",
+      );
+
+      playbackTimerRef.current = window.setTimeout(() => {
+        stopPlayback("메트로놈이 종료되었습니다.");
+      }, Math.ceil((previewEnd - previewStart) * 1000) + 180);
+    } catch (error) {
+      stopPlayback(error instanceof Error ? error.message : "메트로놈 재생을 시작하지 못했습니다.");
     }
   }
 
@@ -601,6 +711,48 @@ export function AnalysisTimeline({
             현재 창 {formatSeconds(visibleStartSec)} - {formatSeconds(visibleEndSec)}
           </p>
         </div>
+
+        <div className="toolbar-card">
+          <span className="metric-label">메트로놈 BPM</span>
+          <div className="toolbar-row">
+            <button className="mini-button" onClick={() => adjustManualBpm(-1)} type="button">
+              -
+            </button>
+            <input
+              className="bpm-input"
+              max="400"
+              min="20"
+              onChange={handleManualBpmChange}
+              step="0.1"
+              type="number"
+              value={manualBpmText}
+            />
+            <button className="mini-button" onClick={() => adjustManualBpm(1)} type="button">
+              +
+            </button>
+            <button className="mini-button" disabled={!isManualBpm} onClick={resetManualBpm} type="button">
+              리셋
+            </button>
+          </div>
+          <p className="toolbar-note">
+            분석값 {analysis.globalBpm} BPM{isManualBpm ? ` · 현재 ${effectiveBpm} (수동)` : " 사용 중"}
+          </p>
+        </div>
+
+        <div className="toolbar-card">
+          <span className="metric-label">박자 격자</span>
+          <div className="toolbar-row">
+            <label className="grid-toggle">
+              <input
+                checked={showBeatGrid}
+                onChange={(event) => setShowBeatGrid(event.target.checked)}
+                type="checkbox"
+              />
+              <span>{effectiveBpm} BPM 격자 표시</span>
+            </label>
+          </div>
+          <p className="toolbar-note">박 {metronomeBeats.length}개 · offset {analysis.offsetSec.toFixed(3)}s</p>
+        </div>
       </div>
 
       <div className="timeline-stage">
@@ -618,6 +770,16 @@ export function AnalysisTimeline({
                     />
                   ))}
                 </div>
+                {showBeatGrid && analysis.songLengthSec > 0
+                  ? metronomeBeats.map((beat, beatIndex) => (
+                      <span
+                        key={`beat-${beatIndex}`}
+                        aria-hidden="true"
+                        className={`timeline-beat-line ${beat.isDownbeat ? "downbeat" : ""}`}
+                        style={{ left: `${Math.min((beat.timeSec / analysis.songLengthSec) * 100, 100)}%` }}
+                      />
+                    ))
+                  : null}
                 {analysis.songLengthSec > 0 ? (
                   <div
                     aria-hidden="true"
@@ -728,10 +890,39 @@ export function AnalysisTimeline({
           </label>
         </div>
 
+        <div className="scene-type-picker">
+          <span className="metric-label">씬 타입 선택</span>
+          <div className="scene-type-chips">
+            {timelineLanes.length === 0 ? (
+              <span className="helper-text">재생할 씬 타입이 없습니다.</span>
+            ) : (
+              timelineLanes.map((lane) => (
+                <button
+                  key={`scene-${lane.id}`}
+                  type="button"
+                  className={`scene-type-chip ${lane.sceneType === selectedSceneType ? "active" : ""}`}
+                  onClick={() => setSelectedSceneType(lane.sceneType)}
+                >
+                  {lane.label}
+                  <span className="scene-type-count">{lane.responseEvents.length}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
         <div className="preview-buttons">
           <button
+            className="primary-button"
+            disabled={!audioFile || metronomeBeats.length === 0}
+            onClick={() => void playMetronome()}
+            type="button"
+          >
+            메트로놈 재생
+          </button>
+          <button
             className="secondary-button"
-            disabled={!audioFile || variant.candidateEvents.length === 0}
+            disabled={!audioFile || previewEvents.length === 0}
             onClick={() => void playPreview("all")}
             type="button"
           >
@@ -739,19 +930,11 @@ export function AnalysisTimeline({
           </button>
           <button
             className="secondary-button"
-            disabled={!audioFile || !selectedLane}
-            onClick={() => void playPreview("group")}
+            disabled={!audioFile || sceneTypePreviewEvents.length === 0}
+            onClick={() => void playPreview("sceneType")}
             type="button"
           >
-            현재 씬 타입 재생
-          </button>
-          <button
-            className="secondary-button"
-            disabled={!audioFile || !selectedEvent}
-            onClick={() => void playPreview("focus")}
-            type="button"
-          >
-            선택 이벤트 재생
+            선택 씬 타입 재생
           </button>
           <button className="ghost-button" disabled={!isPlaying} onClick={() => stopPlayback("미리듣기를 중지했습니다.")} type="button">
             정지

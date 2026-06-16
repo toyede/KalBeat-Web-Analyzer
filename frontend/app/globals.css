@@ -561,6 +561,98 @@ button {
   background: rgba(0, 0, 0, 0.28);
 }
 
+.timeline-beat-line {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  width: 1px;
+  background: rgba(37, 99, 235, 0.18);
+  pointer-events: none;
+}
+
+.timeline-beat-line.downbeat {
+  width: 2px;
+  background: rgba(37, 99, 235, 0.5);
+}
+
+.grid-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.grid-toggle input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.bpm-input {
+  width: 84px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.scene-type-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scene-type-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.scene-type-chip:hover {
+  border-color: rgba(37, 99, 235, 0.5);
+}
+
+.scene-type-chip.active {
+  border-color: rgba(37, 99, 235, 0.9);
+  background: rgba(37, 99, 235, 0.1);
+  color: rgb(30, 64, 175);
+}
+
+.scene-type-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.08);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.scene-type-chip.active .scene-type-count {
+  background: rgba(37, 99, 235, 0.22);
+}
+
 .timeline-lanes {
   display: grid;
   gap: 10px;
