@@ -57,6 +57,13 @@ class OffsetCandidate(BaseModel):
     reason: str = ""
 
 
+class BpmCandidate(BaseModel):
+    source: Literal["precise_autocorr", "pipeline", "ioi"]
+    label: str
+    bpm: float = Field(..., gt=0)
+    reason: str = ""
+
+
 class CandidateVariant(BaseModel):
     strategy: CandidateStrategy
     label: str
@@ -75,6 +82,7 @@ class AnalysisResponse(BaseModel):
     offsetSec: float = Field(..., ge=0)
     songLengthSec: float = Field(..., ge=0)
     defaultCandidateStrategy: CandidateStrategy = "hybrid"
+    bpmCandidates: list[BpmCandidate] = Field(default_factory=list)
     offsetCandidates: list[OffsetCandidate] = Field(default_factory=list)
     candidateEvents: list[CandidateEvent] = Field(default_factory=list)
     candidateVariants: list[CandidateVariant] = Field(default_factory=list)

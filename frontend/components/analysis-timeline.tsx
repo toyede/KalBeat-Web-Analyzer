@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 
 import { candidateSceneTypeMeta, candidateSceneTypeOrder } from "@/lib/candidate-scene-meta";
 import { timingRoleMeta } from "@/lib/candidate-event-meta";
-import type { AnalysisResponse, CandidateReviewState, CandidateVariant, OffsetCandidate, PatternSegment } from "@/lib/types";
+import type {
+  AnalysisResponse,
+  BpmCandidate,
+  CandidateReviewState,
+  CandidateVariant,
+  OffsetCandidate,
+  PatternSegment,
+} from "@/lib/types";
 
 const MIN_TIMELINE_ZOOM = 1;
 const MAX_TIMELINE_ZOOM = 10;
@@ -280,6 +287,7 @@ export function AnalysisTimeline({
 
   const timelineLanes = useMemo(() => buildTimelineLanes(variant), [variant]);
   const previewEvents = useMemo(() => buildPreviewEventsForLanes(timelineLanes), [timelineLanes]);
+  const bpmCandidates: BpmCandidate[] = analysis.bpmCandidates ?? [];
   const parsedManualBpm = Number.parseFloat(manualBpmText);
   const effectiveBpm = Number.isFinite(parsedManualBpm) && parsedManualBpm > 0 ? parsedManualBpm : analysis.globalBpm;
   const isManualBpm = Math.abs(effectiveBpm - analysis.globalBpm) > 1e-6;
@@ -492,6 +500,10 @@ export function AnalysisTimeline({
     setManualBpmText(String(analysis.globalBpm));
   }
 
+  function selectBpmCandidate(bpm: number) {
+    setManualBpmText(String(bpm));
+  }
+
   function handleManualOffsetChange(event: ChangeEvent<HTMLInputElement>) {
     setManualOffsetText(event.target.value);
   }
@@ -640,10 +652,9 @@ export function AnalysisTimeline({
         }
 
         const when = startAt + (beat.timeSec - previewStart);
-        // Downbeat (bar start) reads higher and louder so offset/마디 정렬을 귀로 확인할 수 있다.
-        const pitchRate = beat.isDownbeat ? 1.5 : 0.95;
-        const gainScale = ((beat.isDownbeat ? 1 : 0.6) * effectVolume) / 100;
-        scheduleSynthClick(context, when, gainScale, pitchRate);
+        // 음높이는 모든 박 동일. 마디 첫 박만 살짝 크게 해서 위치만 구분한다.
+        const gainScale = ((beat.isDownbeat ? 1 : 0.7) * effectVolume) / 100;
+        scheduleSynthClick(context, when, gainScale, 1.0);
         scheduledBeats += 1;
       }
 
@@ -651,7 +662,7 @@ export function AnalysisTimeline({
       setPreviewStatus(
         `메트로놈 재생: ${effectiveBpm} BPM${isManualBpm ? ` (수동 · 분석값 ${analysis.globalBpm})` : ""} · ` +
           `offset ${effectiveOffset.toFixed(3)}s${isManualOffset ? " (수동)" : ""} · 박 ${scheduledBeats}개. ` +
-          "마디 첫 박(강박)은 높은 클릭으로 표시됩니다. 원본 박자와 어긋나면 BPM 또는 offset이 틀린 것입니다.",
+          "모든 박이 같은 음높이이고 마디 첫 박만 조금 더 큽니다. 원본 박자와 어긋나면 BPM 또는 offset이 틀린 것입니다.",
       );
 
       playbackTimerRef.current = window.setTimeout(() => {
@@ -742,7 +753,7 @@ export function AnalysisTimeline({
           </p>
         </div>
 
-        <div className="toolbar-card">
+        <div className="toolbar-card offset-card">
           <span className="metric-label">메트로놈 BPM</span>
           <div className="toolbar-row">
             <button className="mini-button" onClick={() => adjustManualBpm(-1)} type="button">
@@ -764,6 +775,25 @@ export function AnalysisTimeline({
               리셋
             </button>
           </div>
+          {bpmCandidates.length > 0 ? (
+            <div className="offset-candidate-list">
+              <span className="offset-candidate-caption">후보 (클릭하면 적용)</span>
+              <div className="scene-type-chips">
+                {bpmCandidates.map((candidate) => (
+                  <button
+                    key={candidate.source}
+                    type="button"
+                    className={`scene-type-chip ${Math.abs(effectiveBpm - candidate.bpm) < 0.05 ? "active" : ""}`}
+                    onClick={() => selectBpmCandidate(candidate.bpm)}
+                    title={candidate.reason}
+                  >
+                    {candidate.label}
+                    <span className="scene-type-count">{candidate.bpm}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <p className="toolbar-note">
             분석값 {analysis.globalBpm} BPM{isManualBpm ? ` · 현재 ${effectiveBpm} (수동)` : " 사용 중"}
           </p>

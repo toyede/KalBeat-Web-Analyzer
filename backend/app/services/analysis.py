@@ -13,6 +13,7 @@ from scipy.signal import resample_poly
 
 from app.schemas import (
     AnalysisResponse,
+    BpmCandidate,
     CandidateEvent,
     CandidateSceneFamily,
     CandidateSceneType,
@@ -291,6 +292,112 @@ def _octave_correct_bpm(base_bpm: float, onset_envelope: np.ndarray, sample_rate
     in_band = [item for item in scored if PREFERRED_BPM_LOW <= item[0] <= PREFERRED_BPM_HIGH]
     pool = in_band or scored
     return max(pool, key=lambda item: item[1])[0]
+
+
+def _onset_autocorrelation(onset_envelope: np.ndarray) -> np.ndarray:
+    signal = np.asarray(onset_envelope, dtype=float)
+    signal = signal - signal.mean()
+    length = signal.size
+
+    if length < 4:
+        return np.zeros(0, dtype=float)
+
+    spectrum = np.fft.rfft(signal, 2 * length)
+    return np.fft.irfft(spectrum * np.conj(spectrum))[:length]
+
+
+def _precise_autocorr_bpm(onset_envelope: np.ndarray, sample_rate: int, center_bpm: float, band: float = 0.08) -> float:
+    """Refine an existing BPM to sub-frame precision via the onset autocorrelation peak.
+
+    Searches only a narrow band around center_bpm so it sharpens the already-correct
+    metrical level instead of jumping to a neighbouring (octave/sub-harmonic) peak.
+    """
+    if center_bpm <= 0:
+        return center_bpm
+
+    autocorrelation = _onset_autocorrelation(onset_envelope)
+
+    if autocorrelation.size < 4:
+        return center_bpm
+
+    frame_rate = sample_rate / HOP_LENGTH
+    lag_low = max(1, int(frame_rate * 60.0 / (center_bpm * (1.0 + band))))
+    lag_high = min(autocorrelation.size - 2, int(frame_rate * 60.0 / (center_bpm * (1.0 - band))))
+
+    if lag_high <= lag_low:
+        return center_bpm
+
+    segment = autocorrelation[lag_low : lag_high + 1]
+    peak_lag = int(np.argmax(segment)) + lag_low
+    left, center, right = autocorrelation[peak_lag - 1], autocorrelation[peak_lag], autocorrelation[peak_lag + 1]
+    denominator = left - (2.0 * center) + right
+    delta = 0.5 * (left - right) / denominator if denominator != 0 else 0.0
+
+    return 60.0 * frame_rate / (peak_lag + delta)
+
+
+def _ioi_bpm(onset_times: np.ndarray, center_bpm: float) -> float | None:
+    """Estimate BPM from inter-onset intervals — an estimator independent of the envelope autocorrelation."""
+    onset_times = np.asarray(onset_times, dtype=float)
+
+    if center_bpm <= 0 or onset_times.size < 5:
+        return None
+
+    beat_duration = 60.0 / center_bpm
+    intervals = np.diff(onset_times)
+    near_beat = intervals[(intervals > beat_duration * 0.7) & (intervals < beat_duration * 1.4)]
+    eighth = intervals[(intervals > beat_duration * 0.35) & (intervals < beat_duration * 0.65)] * 2.0
+    sixteenth = intervals[(intervals > beat_duration * 0.17) & (intervals < beat_duration * 0.33)] * 4.0
+    pool = np.sort(np.concatenate([near_beat, eighth, sixteenth]))
+
+    if pool.size < 4:
+        return None
+
+    low_index = int(pool.size * 0.1)
+    high_index = max(low_index + 1, int(pool.size * 0.9))
+    trimmed_mean = float(np.mean(pool[low_index:high_index]))
+
+    if trimmed_mean <= 0:
+        return None
+
+    return 60.0 / trimmed_mean
+
+
+def _build_bpm_candidates(
+    onset_envelope: np.ndarray,
+    onset_times: np.ndarray,
+    sample_rate: int,
+    global_bpm: float,
+) -> list[BpmCandidate]:
+    """Offer BPM estimates from a few methods so the user can pick/verify (order: precise, pipeline, IOI)."""
+    candidates: list[BpmCandidate] = [
+        BpmCandidate(
+            source="precise_autocorr",
+            label="정밀 (자기상관)",
+            bpm=_round_float(_precise_autocorr_bpm(onset_envelope, sample_rate, global_bpm), 2),
+            reason="온셋 자기상관 피크를 서브-프레임까지 보정한 정밀 추정입니다. 곡이 길어도 박이 잘 안 밀립니다.",
+        ),
+        BpmCandidate(
+            source="pipeline",
+            label="기존 (박자 추적기)",
+            bpm=_round_float(global_bpm, 2),
+            reason="박자 추적기 기반의 기존 기본 추정값입니다.",
+        ),
+    ]
+
+    ioi_bpm = _ioi_bpm(onset_times, global_bpm)
+
+    if ioi_bpm is not None and ioi_bpm > 0:
+        candidates.append(
+            BpmCandidate(
+                source="ioi",
+                label="온셋 간격(IOI)",
+                bpm=_round_float(ioi_bpm, 2),
+                reason="연속한 온셋 사이 간격을 모아 추정한, 자기상관과 독립적인 다른 방식입니다.",
+            )
+        )
+
+    return candidates
 
 
 def _best_grid_phase_offset(onset_envelope: np.ndarray, sample_rate: int, bpm: float) -> float:
@@ -2307,6 +2414,12 @@ def analyze_audio_file(file_name: str, saved_path: Path) -> AnalysisResponse:
     else:
         raise AnalysisError("Unable to estimate BPM or offset from this audio file.")
 
+    bpm_candidates = _build_bpm_candidates(
+        onset_envelope=onset_envelope,
+        onset_times=onset_times,
+        sample_rate=sample_rate,
+        global_bpm=global_bpm,
+    )
     offset_candidates = _build_offset_candidates(
         auto_offset_sec=offset_sec,
         beat_tracker_offset_sec=float(beat_times[0]) if beat_times.size > 0 else None,
@@ -2390,6 +2503,7 @@ def analyze_audio_file(file_name: str, saved_path: Path) -> AnalysisResponse:
         offsetSec=_round_float(offset_sec),
         songLengthSec=_round_float(duration_sec),
         defaultCandidateStrategy="hybrid",
+        bpmCandidates=bpm_candidates,
         offsetCandidates=offset_candidates,
         candidateEvents=default_variant.candidateEvents,
         candidateVariants=candidate_variants,

@@ -57,6 +57,15 @@ export type OffsetCandidate = {
   reason: string;
 };
 
+export type BpmCandidateSource = "precise_autocorr" | "pipeline" | "ioi";
+
+export type BpmCandidate = {
+  source: BpmCandidateSource;
+  label: string;
+  bpm: number;
+  reason: string;
+};
+
 export type AnalysisResponse = {
   schemaVersion: number;
   songId: string;
@@ -67,6 +76,7 @@ export type AnalysisResponse = {
   offsetSec: number;
   songLengthSec: number;
   defaultCandidateStrategy: CandidateStrategy;
+  bpmCandidates?: BpmCandidate[];
   offsetCandidates?: OffsetCandidate[];
   candidateEvents: CandidateEvent[];
   candidateVariants: CandidateVariant[];
